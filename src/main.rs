@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::File;
 use std::path::PathBuf;
 
@@ -29,6 +30,12 @@ impl Pos {
     }
 }
 
+impl fmt::Display for Pos {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
 struct Image {
     pixels: Vec<u16>,
     width: u32,
@@ -44,7 +51,7 @@ impl Image {
         };
     }
 
-    fn from_pos(&self, pos: &Pos) -> usize {
+    fn index_from_pos(&self, pos: &Pos) -> usize {
         assert!(
             pos.x <= self.width,
             "Assertion! x: {}, width: {}",
@@ -58,6 +65,11 @@ impl Image {
             self.height
         );
         ((pos.y * self.width) + pos.x).try_into().unwrap()
+    }
+
+    fn pixel_at(&self, pos: &Pos) -> u16 {
+        let idx = self.index_from_pos(pos);
+        self.pixels[idx]
     }
 
     fn find_max_black(&self) -> u16 {
@@ -83,7 +95,7 @@ impl Sample {
 
         for y in 1..pos.y + height {
             for x in 1..pos.x + width {
-                let idx = image.from_pos(&Pos::new(x, y));
+                let idx = image.index_from_pos(&Pos::new(x, y));
                 pixels.push(image.pixels[idx]);
             }
         }
@@ -153,11 +165,25 @@ fn main() {
     //
     // It should be found in the first 15% of the image width.
 
-    let max_value = 2 ^ 16;
-
     let max_black = image.find_max_black();
-    if max_black < max_value / 2 {
+    if max_black < u16::MAX / 2 {
         panic!("Max black isn't black enough");
     }
     println!("Max Black: {}", max_black);
+
+    // Find first not black
+    //
+    // Scan the first 15% of the left hand side of the image starting at the top and moving to the
+    // bottom until a value is reached that is less than 85% of the max black.
+
+    for x in 0..(image.width / 4) {
+        for y in 0..(image.height / 4) {
+            let pos = Pos::new(x, y);
+            let pxl = image.pixel_at(&pos);
+            if pxl < max_black / 2 {
+                println!("First not black: {} at {}", pxl, pos);
+                break;
+            }
+        }
+    }
 }

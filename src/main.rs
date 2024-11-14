@@ -42,6 +42,23 @@ struct Image {
     height: u32,
 }
 
+fn find_not_black(img: &Image, not_black: u16) -> Option<(Pos, u16)> {
+    println!("Looking for less than: {}", not_black);
+    let w = img.width / 4;
+    let h = img.height / 4;
+    println!("Searching to ({}, {})", w, h);
+    for x in 0..(w / 4) {
+        for y in 0..(h / 4) {
+            let pos = Pos::new(x, y);
+            let pxl = img.pixel_at(&pos);
+            if pxl < not_black {
+                return Some((pos, pxl));
+            }
+        }
+    }
+    None
+}
+
 impl Image {
     fn new(pixels: Vec<u16>, width: u32, height: u32) -> Image {
         return Image {
@@ -72,47 +89,46 @@ impl Image {
         self.pixels[idx]
     }
 
-    fn find_max_black(&self) -> u16 {
-        Sample::new_from_image(self, Pos::new(10, 10), 10, 10).average_value()
+    fn max_black(&self) -> Option<u16> {
+        self.sample_at(Pos::new(10, 10), 10, 10).mean_value()
+    }
+
+    fn sample_at(&self, pos: Pos, width: u32, height: u32) -> Sample {
+        let mut pixels = Vec::new();
+
+        for y in 1..pos.y + height {
+            for x in 1..pos.x + width {
+                let idx = self.index_from_pos(&Pos::new(x, y));
+                pixels.push(self.pixels[idx]);
+            }
+        }
+
+        Sample::new(pixels)
     }
 }
 
 struct Sample {
     pixels: Vec<u16>,
-    average_value: Option<u16>,
 }
 
 impl Sample {
     fn new(pixels: Vec<u16>) -> Sample {
-        Sample {
-            pixels,
-            average_value: None,
-        }
+        Sample { pixels }
     }
 
-    fn new_from_image(image: &Image, pos: Pos, width: u32, height: u32) -> Sample {
-        let mut pixels = Vec::new();
-
-        for y in 1..pos.y + height {
-            for x in 1..pos.x + width {
-                let idx = image.index_from_pos(&Pos::new(x, y));
-                pixels.push(image.pixels[idx]);
-            }
+    fn mean_value(&self) -> Option<u16> {
+        let count = self.pixels.len() as u32;
+        if count == 0 {
+            return None;
         }
 
-        Self::new(pixels)
-    }
-
-    fn average_value(&mut self) -> u16 {
-        if let Some(average_value) = self.average_value {
-            return average_value;
+        let mut total: u32 = 0;
+        for x in self.pixels.iter() {
+            total = total + (*x as u32);
         }
 
-        let total: u32 = self.pixels.clone().into_iter().map(u32::from).sum::<u32>();
-        let av = (total / self.pixels.len() as u32) as u16;
-
-        self.average_value = Some(av);
-        return av;
+        let mean = total / count;
+        Some(mean as u16)
     }
 }
 
@@ -147,6 +163,11 @@ fn main() {
 
     let image = Image::new(image_data, width, height);
 
+    // test index_from_pos
+    // let pos = Pos::new(5, 5);
+    // let idx = image.index_from_pos(&pos);
+    // println!("pos: {}, idx: {}", pos, idx);
+
     // 1. What is "Black"
     //
     // Assume area around the step wedge represents max black for the print.
@@ -164,26 +185,23 @@ fn main() {
     // found when search from left to right and top to bottom.
     //
     // It should be found in the first 15% of the image width.
-
-    let max_black = image.find_max_black();
-    if max_black < u16::MAX / 2 {
-        panic!("Max black isn't black enough");
-    }
-    println!("Max Black: {}", max_black);
-
-    // Find first not black
-    //
-    // Scan the first 15% of the left hand side of the image starting at the top and moving to the
-    // bottom until a value is reached that is less than 85% of the max black.
-
-    for x in 0..(image.width / 4) {
-        for y in 0..(image.height / 4) {
-            let pos = Pos::new(x, y);
-            let pxl = image.pixel_at(&pos);
-            if pxl < max_black / 2 {
-                println!("First not black: {} at {}", pxl, pos);
-                break;
-            }
+    if let Some(max_black) = image.max_black() {
+        if max_black < u16::MAX / 2 {
+            panic!("Max black isn't black enough");
         }
+        println!("Max Black: {}", max_black);
+        // Find first not black
+        //
+        // Scan the first 15% of the left hand side of the image starting at the top and moving to the
+        // bottom until a value is reached that is less than 85% of the max black.
+        if let Some((pos, pxl)) = find_not_black(&image, max_black / 8) {
+            println!("First not black: {}: {}", pos, pxl);
+        };
+    }
+
+    // sample at known white area
+    let sample = image.sample_at(Pos::new(150, 50), 10, 10);
+    if let Some(mean_value) = sample.mean_value() {
+        println!("mean white: {}", mean_value);
     }
 }

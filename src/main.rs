@@ -153,6 +153,11 @@ fn main() {
     //
     // It should be found in the first 15% of the image width.
 
+    let max_value = 2 ^ 16;
+
     let max_black = image.find_max_black();
+    if max_black < max_value / 2 {
+        panic!("Max black isn't black enough");
+    }
     println!("Max Black: {}", max_black);
 }

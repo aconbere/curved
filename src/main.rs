@@ -42,23 +42,6 @@ struct Image {
     height: u32,
 }
 
-fn find_not_black(img: &Image, not_black: u16) -> Option<(Pos, u16)> {
-    println!("Looking for less than: {}", not_black);
-    let w = img.width / 4;
-    let h = img.height / 4;
-    println!("Searching to ({}, {})", w, h);
-    for x in 0..(w / 4) {
-        for y in 0..(h / 4) {
-            let pos = Pos::new(x, y);
-            let pxl = img.pixel_at(&pos);
-            if pxl < not_black {
-                return Some((pos, pxl));
-            }
-        }
-    }
-    None
-}
-
 impl Image {
     fn new(pixels: Vec<u16>, width: u32, height: u32) -> Image {
         return Image {
@@ -84,20 +67,11 @@ impl Image {
         ((pos.y * self.width) + pos.x).try_into().unwrap()
     }
 
-    fn pixel_at(&self, pos: &Pos) -> u16 {
-        let idx = self.index_from_pos(pos);
-        self.pixels[idx]
-    }
-
-    fn max_black(&self) -> Option<u16> {
-        self.sample_at(Pos::new(10, 10), 10, 10).mean_value()
-    }
-
-    fn sample_at(&self, pos: Pos, width: u32, height: u32) -> Sample {
+    fn sample_at(&self, pos: Pos, width: u32, height: u32) -> Result<Sample, String> {
         let mut pixels = Vec::new();
 
-        for y in 1..pos.y + height {
-            for x in 1..pos.x + width {
+        for y in pos.y..(pos.y + height) {
+            for x in pos.x..(pos.x + width) {
                 let idx = self.index_from_pos(&Pos::new(x, y));
                 pixels.push(self.pixels[idx]);
             }
@@ -111,24 +85,59 @@ struct Sample {
     pixels: Vec<u16>,
 }
 
+impl fmt::Display for Sample {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (i, x) in self.pixels.iter().enumerate() {
+            write!(f, "({}, {}) \n", i, x)?;
+        }
+        write!(f, "\n")
+    }
+}
+
+struct Stat {
+    count: u32,
+    mean: u16,
+    min: u16,
+    max: u16,
+}
+
 impl Sample {
-    fn new(pixels: Vec<u16>) -> Sample {
-        Sample { pixels }
+    fn new(pixels: Vec<u16>) -> Result<Sample, String> {
+        if pixels.len() <= 0 {
+            Err("pixels empty".to_string())
+        } else {
+            Ok(Sample { pixels })
+        }
     }
 
-    fn mean_value(&self) -> Option<u16> {
+    fn statistics(&self) -> Stat {
         let count = self.pixels.len() as u32;
+
         if count == 0 {
-            return None;
+            panic!("pixels should always have count > 0");
         }
 
         let mut total: u32 = 0;
+        let mut min: u16 = u16::MAX;
+        let mut max: u16 = 0;
+
         for x in self.pixels.iter() {
-            total = total + (*x as u32);
+            let _x = *x;
+            total = total + (_x as u32);
+            if _x < min {
+                min = _x;
+            }
+            if _x > max {
+                max = _x;
+            }
         }
 
-        let mean = total / count;
-        Some(mean as u16)
+        Stat {
+            count,
+            mean: (total / count) as u16,
+            min,
+            max,
+        }
     }
 }
 
@@ -185,23 +194,21 @@ fn main() {
     // found when search from left to right and top to bottom.
     //
     // It should be found in the first 15% of the image width.
-    if let Some(max_black) = image.max_black() {
-        if max_black < u16::MAX / 2 {
-            panic!("Max black isn't black enough");
-        }
-        println!("Max Black: {}", max_black);
-        // Find first not black
-        //
-        // Scan the first 15% of the left hand side of the image starting at the top and moving to the
-        // bottom until a value is reached that is less than 85% of the max black.
-        if let Some((pos, pxl)) = find_not_black(&image, max_black / 8) {
-            println!("First not black: {}: {}", pos, pxl);
-        };
-    }
+    let edge_sample = image.sample_at(Pos::new(10, 10), 10, 10).unwrap();
+    let edge_stats = edge_sample.statistics();
+    println!("edge:");
+    println!("\tcount: {}", edge_stats.count);
+    println!("\tmean: {}", edge_stats.mean);
+    println!("\tmin: {}", edge_stats.min);
+    println!("\tmax: {}", edge_stats.max);
 
     // sample at known white area
-    let sample = image.sample_at(Pos::new(150, 50), 10, 10);
-    if let Some(mean_value) = sample.mean_value() {
-        println!("mean white: {}", mean_value);
-    }
+    let sample = image.sample_at(Pos::new(180, 80), 10, 10).unwrap();
+    let stats = sample.statistics();
+    println!("deep:");
+    println!("\tcount: {}", stats.count);
+    println!("\tmean: {}", stats.mean);
+    println!("\tmin: {}", stats.min);
+    println!("\tmax: {}", stats.max);
+    // println!("sample: {}", sample);
 }

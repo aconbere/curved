@@ -1,214 +1,159 @@
-use std::fmt;
-use std::fs::File;
+use std::fs;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
-use tiff::decoder::{Decoder, DecodingResult};
-use tiff::ColorType;
+use image as im;
+use image::{DynamicImage, Luma};
 
-fn colortype_to_str(c: ColorType) -> String {
-    return match c {
-        ColorType::RGB(depth) => format!("RGB: {}", depth),
-        ColorType::Gray(depth) => format!("Gray:{}", depth),
-        ColorType::Palette(depth) => format!("Palette:{}", depth),
-        ColorType::GrayA(depth) => format!("GrayA:{}", depth),
-        ColorType::RGBA(depth) => format!("RGBA:{}", depth),
-        ColorType::CMYK(depth) => format!("CMYK:{}", depth),
-        ColorType::YCbCr(depth) => format!("YCbCr:{}", depth),
-    };
-}
-
-struct Pos {
-    x: u32,
-    y: u32,
-}
-
-impl Pos {
-    fn new(x: u32, y: u32) -> Pos {
-        Pos { x, y }
-    }
-}
-
-impl fmt::Display for Pos {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({}, {})", self.x, self.y)
-    }
-}
-
-struct Image {
-    pixels: Vec<u16>,
-    width: u32,
-    height: u32,
-}
-
-impl Image {
-    fn new(pixels: Vec<u16>, width: u32, height: u32) -> Image {
-        return Image {
-            pixels,
-            width,
-            height,
-        };
-    }
-
-    fn index_from_pos(&self, pos: &Pos) -> usize {
-        assert!(
-            pos.x <= self.width,
-            "Assertion! x: {}, width: {}",
-            pos.x,
-            self.width
-        );
-        assert!(
-            pos.y <= self.height,
-            "Assertion! y: {}, height: {}",
-            pos.y,
-            self.height
-        );
-        ((pos.y * self.width) + pos.x).try_into().unwrap()
-    }
-
-    fn sample_at(&self, pos: Pos, width: u32, height: u32) -> Result<Sample, String> {
-        let mut pixels = Vec::new();
-
-        for y in pos.y..(pos.y + height) {
-            for x in pos.x..(pos.x + width) {
-                let idx = self.index_from_pos(&Pos::new(x, y));
-                pixels.push(self.pixels[idx]);
-            }
-        }
-
-        Sample::new(pixels)
-    }
-}
-
-struct Sample {
-    pixels: Vec<u16>,
-}
-
-impl fmt::Display for Sample {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (i, x) in self.pixels.iter().enumerate() {
-            write!(f, "({}, {}) \n", i, x)?;
-        }
-        write!(f, "\n")
-    }
-}
-
-struct Stat {
-    count: u32,
-    mean: u16,
-    min: u16,
-    max: u16,
-}
-
-impl Sample {
-    fn new(pixels: Vec<u16>) -> Result<Sample, String> {
-        if pixels.len() <= 0 {
-            Err("pixels empty".to_string())
-        } else {
-            Ok(Sample { pixels })
-        }
-    }
-
-    fn statistics(&self) -> Stat {
-        let count = self.pixels.len() as u32;
-
-        if count == 0 {
-            panic!("pixels should always have count > 0");
-        }
-
-        let mut total: u32 = 0;
-        let mut min: u16 = u16::MAX;
-        let mut max: u16 = 0;
-
-        for x in self.pixels.iter() {
-            let _x = *x;
-            total = total + (_x as u32);
-            if _x < min {
-                min = _x;
-            }
-            if _x > max {
-                max = _x;
-            }
-        }
-
-        Stat {
-            count,
-            mean: (total / count) as u16,
-            min,
-            max,
-        }
-    }
-}
+use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut};
+use imageproc::edges;
+use imageproc::hough;
+use imageproc::map::map_pixels;
+use imageproc::rect::Rect;
 
 #[derive(Parser, Debug)]
 #[command()]
 struct Args {
-    #[arg(short, long)]
-    file_path: PathBuf,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Adds files to myapp
+    Scan {
+        #[arg(short, long)]
+        input: PathBuf,
+        output_dir: PathBuf,
+    },
+    Generate {
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+}
+
+fn scan(input: &PathBuf, output_dir: &PathBuf) {
+    let input_file_path = fs::canonicalize(&input).unwrap();
+    println!("Input File Path: {}", &input_file_path.display());
+
+    let output_dir = fs::canonicalize(&output_dir).unwrap();
+    println!("Outout File Path: {}", &output_dir.display());
+    let image = image::open(&input_file_path).unwrap().to_luma8();
+    let (width, height) = image.dimensions();
+    println!("Width: {}", width);
+    println!("Height: {}", height);
+    let edges_image = edges::canny(&image, 50.0, 100.0);
+    edges_image.save(output_dir.join("canny.png")).unwrap();
+
+    // Detect lines using Hough transform
+    let options = hough::LineDetectionOptions {
+        vote_threshold: 200,
+        suppression_radius: 8,
+    };
+    let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
+
+    let white = im::Rgb::<u8>([255, 255, 255]);
+    let green = im::Rgb::<u8>([0, 255, 0]);
+    let black = im::Rgb::<u8>([0, 0, 0]);
+
+    // Convert edge image to colour
+    let color_edges = map_pixels(&edges_image, |_, _, p| if p[0] > 0 { white } else { black });
+
+    // Draw lines on top of edge image
+    let lines_image = hough::draw_polar_lines(&color_edges, &lines, green);
+    let lines_path = output_dir.join("lines.png");
+    lines_image.save(&lines_path).unwrap();
+
+    let vertical_lines: Vec<&hough::PolarLine> =
+        lines.iter().filter(|l| l.angle_in_degrees == 90).collect();
+
+    for vl in vertical_lines.iter() {
+        println!("Vertical Line: {:?}", vl);
+    }
+}
+
+/* generate takes an output path and creates a black and white stepwedge
+ * 0 is black
+ * 65536 is white
+ *
+ * divide the range by count then draw that value into each square
+ */
+fn generate(output: &PathBuf) {
+    let count = 101;
+    let columns = 10;
+    let rows = (count as f32 / columns as f32).ceil() as u32;
+
+    // number of pixels each square
+    let square_size: u32 = 100;
+
+    // count of pixels on the margin of the image
+    let margin = 10;
+
+    let width = columns * square_size + (margin * 2);
+    let height = (rows * square_size) + (margin * 2);
+
+    let mut image = DynamicImage::new_luma16(width, height).to_luma16();
+
+    // the amount that each square increases as we go towards max
+    let interval = u16::MAX / count;
+
+    let mut n = 0;
+    for row in 0..rows {
+        for col in 0..columns {
+            let x = (margin + (col * square_size)) as i32;
+            let y = (margin + (row * square_size)) as i32;
+
+            let rect = Rect::at(x, y).of_size(square_size, square_size);
+            let tone = interval * n;
+            draw_filled_rect_mut(&mut image, rect, Luma([tone]));
+            n += 1;
+            if n == count {
+                break;
+            }
+        }
+    }
+
+    // Draw the horizontal grid lines
+    for row in 0..rows {
+        // flip the tone from the color of the first square in this line so that it
+        // shows up in the dark and lights.
+        let inverted_tone = u16::MAX - (interval * (row as u16) * (columns as u16));
+        let y = ((row * square_size) + margin) as f32;
+        draw_line_segment_mut(
+            &mut image,
+            (margin as f32, y),
+            ((width - margin) as f32, y),
+            Luma([inverted_tone]),
+        );
+    }
+
+    // Draw the vertical grid lines
+    for col in 0..(columns + 1) {
+        // pick a generic middle grey
+        let tone = u16::MAX / 2;
+        let x = ((col * square_size) + margin) as f32;
+
+        draw_line_segment_mut(
+            &mut image,
+            (x, margin as f32),
+            (x, (height - margin) as f32),
+            Luma([tone]),
+        );
+    }
+
+    image.save(output).unwrap();
 }
 
 fn main() {
     let args = Args::parse();
 
-    println!("File Path: {}", args.file_path.display());
-    let tiff_file = File::open(args.file_path).unwrap();
-
-    let mut decoder = Decoder::new(tiff_file).expect("Failed to create decoder");
-    let (width, height) = decoder.dimensions().expect("Failed to decode dimensions");
-
-    println!("Width: {}", width);
-    println!("Height: {}", height);
-
-    let colortype = decoder.colortype().expect("Failed to decode colortype");
-    println!("ColorType: {}", colortype_to_str(colortype));
-
-    let decoding_result = decoder.read_image().expect("Failed to decode tiff");
-
-    let image_data = match decoding_result {
-        DecodingResult::U16(res) => res,
-        _ => panic!("wrong bitdepth"),
-    };
-
-    let image = Image::new(image_data, width, height);
-
-    // test index_from_pos
-    // let pos = Pos::new(5, 5);
-    // let idx = image.index_from_pos(&pos);
-    // println!("pos: {}, idx: {}", pos, idx);
-
-    // 1. What is "Black"
-    //
-    // Assume area around the step wedge represents max black for the print.
-    // Take a sample of those pixels. This is our "black point".
-    //
-    // Is it valuable to know the range of expected blacks so that I can ask
-    // questions like "Is this within 1 std deviation of black"?
-    //
-    // 2: What is "White"
-    //
-    // Assume the whitest square is the first square. First job is to find
-    // the first square.
-    //
-    // The first square should be the first "substantial" patch of low values
-    // found when search from left to right and top to bottom.
-    //
-    // It should be found in the first 15% of the image width.
-    let edge_sample = image.sample_at(Pos::new(10, 10), 10, 10).unwrap();
-    let edge_stats = edge_sample.statistics();
-    println!("edge:");
-    println!("\tcount: {}", edge_stats.count);
-    println!("\tmean: {}", edge_stats.mean);
-    println!("\tmin: {}", edge_stats.min);
-    println!("\tmax: {}", edge_stats.max);
-
-    // sample at known white area
-    let sample = image.sample_at(Pos::new(180, 80), 10, 10).unwrap();
-    let stats = sample.statistics();
-    println!("deep:");
-    println!("\tcount: {}", stats.count);
-    println!("\tmean: {}", stats.mean);
-    println!("\tmin: {}", stats.min);
-    println!("\tmax: {}", stats.max);
-    // println!("sample: {}", sample);
+    match &args.command {
+        Commands::Scan { input, output_dir } => {
+            scan(&input, &output_dir);
+        }
+        Commands::Generate { output } => {
+            generate(&output);
+        }
+    }
 }

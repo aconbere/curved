@@ -19,6 +19,9 @@ use ab_glyph::FontRef;
 struct Args {
     #[command(subcommand)]
     command: Commands,
+
+    #[arg(short, long)]
+    debug: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -51,38 +54,73 @@ fn sampled_mean(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rect: Rect) -> u16 {
     return ((total as u32) / count) as u16;
 }
 
-fn scan(input: &PathBuf, output_dir: &PathBuf) {
+fn draw_hough_lines_image(
+    edges_image: &ImageBuffer<Luma<u8>, Vec<u8>>,
+    lines: &Vec<hough::PolarLine>,
+    output_dir: &PathBuf,
+) {
+    let white = im::Rgb::<u8>([255, 255, 255]);
+    let green = im::Rgb::<u8>([0, 255, 0]);
+    let black = im::Rgb::<u8>([0, 0, 0]);
+
+    // Convert edge image to colour
+    let color_edges = map_pixels(edges_image, |_, _, p| if p[0] > 0 { white } else { black });
+
+    // Draw lines on top of edge image
+    let lines_image = hough::draw_polar_lines(&color_edges, &lines, green);
+    let lines_path = output_dir.join("lines.png");
+    lines_image.save(&lines_path).unwrap();
+}
+
+/* scan takes a path to a scanned image (input) and a path to a
+ * directory to write its outputs.
+ *
+ * Scan looks at an input image assumed to be a scan of a print
+ * of the generated image from `generate`. It then searches that
+ * image for the sequence of tonal values in each square and outputs
+ * a curve adjustment that maps the scanned tonal values to a linear
+ * tone curve.
+ *
+ */
+fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
     let square_count = 101;
     let input_file_path = fs::canonicalize(&input).unwrap();
     let output_dir = fs::canonicalize(&output_dir).unwrap();
 
     let image = image::open(&input_file_path).unwrap();
     let image_16 = image.to_luma16();
+
+    // note: Once processing scans we'll want to scale the image appropriately
     let (width, height) = image_16.dimensions();
-    println!("Width: {}", width);
-    println!("Height: {}", height);
+    if debug {
+        println!("Dimensions: ({}, {})", width, height);
+    }
 
+    // Canny is an edge detection algorithm, it's the input to the hough transform
+    // we'll use later to do line detection
     let edges_image = edges::canny(&image.to_luma8(), 50.0, 100.0);
-    edges_image.save(output_dir.join("canny.png")).unwrap();
 
-    // Detect lines using Hough transform
+    if debug {
+        edges_image.save(output_dir.join("canny.png")).unwrap();
+    }
+
+    // Detect lines using Hough transform. The generated image uses lines to differentiate the
+    // steps in the print This should allow us then to find those lines and then search the image
+    // for our steps.
     let options = hough::LineDetectionOptions {
         vote_threshold: 200,
         suppression_radius: 8,
     };
     let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
 
-    let white = im::Rgb::<u8>([255, 255, 255]);
-    let green = im::Rgb::<u8>([0, 255, 0]);
-    let black = im::Rgb::<u8>([0, 0, 0]);
+    if debug {
+        draw_hough_lines_image(&edges_image, &lines, &output_dir);
+    }
 
-    // Convert edge image to colour
-    let color_edges = map_pixels(&edges_image, |_, _, p| if p[0] > 0 { white } else { black });
-
-    // Draw lines on top of edge image
-    let lines_image = hough::draw_polar_lines(&color_edges, &lines, green);
-    let lines_path = output_dir.join("lines.png");
-    lines_image.save(&lines_path).unwrap();
+    // Note! In the future lines wont be perfectly alinged, I'll need to find
+    // the angle of a nearby line and then adjust the image to match that
+    //
+    // See: https://docs.rs/imageproc/latest/imageproc/geometric_transformations/fn.rotate.html
 
     let vertical_lines: Vec<&hough::PolarLine> =
         lines.iter().filter(|l| l.angle_in_degrees == 90).collect();
@@ -90,12 +128,13 @@ fn scan(input: &PathBuf, output_dir: &PathBuf) {
     let horizontal_lines: Vec<&hough::PolarLine> =
         lines.iter().filter(|l| l.angle_in_degrees == 0).collect();
 
-    // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
-    // horizontal lines "r" is the same as the y coordinate.
+    // Safety check to make sure our image is clear enough to find all the lines
     if vertical_lines.len() < 11 || horizontal_lines.len() < 11 {
         panic!("Failed to find all the lines");
     }
 
+    // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
+    // horizontal lines "r" is the same as the y coordinate.
     let origin_x = vertical_lines[0].r as u32;
     let origin_y = horizontal_lines[0].r as u32;
     println!("Origin: ({}, {})", origin_x, origin_y);
@@ -106,19 +145,31 @@ fn scan(input: &PathBuf, output_dir: &PathBuf) {
 
     let mut samples: Vec<u16> = vec![0; square_count];
     let mut n = 0;
-    for row in 0..9 {
+    for row in 0..11 {
         for col in 0..10 {
+            if n >= 101 {
+                break;
+            }
             let x = origin_x + (col * square_size);
             let y = origin_y + (row * square_size);
 
-            // Consider a stepped in margin to avoid oddities
-            let rect = Rect::at(x as i32, y as i32).of_size(square_size, square_size);
+            // Take the expected 100x100 pixel square at (x,y) and avoid the numbers in the top
+            // left as well as any line inconsistencies.
+            let rect = Rect::at((x + 25) as i32, (y + 25) as i32)
+                .of_size(square_size - 30, square_size - 30);
+
             let sample = sampled_mean(&image_16, rect);
             samples[n] = sample;
             println!("Sample: {}: {:?} - {}", n, rect, sample);
             n += 1;
         }
     }
+
+    // Now normalize the samples based on the maximum and minimum values
+    // We expect for the max observed to be greater than zero and the minimum
+    // to to less than u16::max. Assuming the print was printed to d-max then
+    // we want to distribute our observed values evenly between max and min
+    // before applying a curve.
 }
 
 /* generate takes an output path and creates a black and white stepwedge
@@ -127,7 +178,7 @@ fn scan(input: &PathBuf, output_dir: &PathBuf) {
  *
  * divide the range by count then draw that value into each square
  */
-fn generate(output: &PathBuf) {
+fn generate(output: &PathBuf, _debug: bool) {
     const FONT_BYTES: &[u8] = include_bytes!("../data/fonts/Lato-Black.ttf");
     let font = FontRef::try_from_slice(FONT_BYTES).unwrap();
 
@@ -147,7 +198,9 @@ fn generate(output: &PathBuf) {
     let mut image = DynamicImage::new_luma16(width, height).to_luma16();
 
     // the amount that each square increases as we go towards max
-    let interval = u16::MAX / count;
+    // Note that because we start at zero we want 100 equal chunks
+    // to filled up 101 times
+    let interval = u16::MAX / (count - 1);
 
     let mut n = 0;
     for row in 0..rows {
@@ -207,10 +260,10 @@ fn main() {
 
     match &args.command {
         Commands::Scan { input, output_dir } => {
-            scan(&input, &output_dir);
+            scan(&input, &output_dir, args.debug);
         }
         Commands::Generate { output } => {
-            generate(&output);
+            generate(&output, args.debug);
         }
     }
 }

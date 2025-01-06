@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use image as im;
-use image::{DynamicImage, Luma};
+use image::{DynamicImage, ImageBuffer, Luma};
 
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::edges;
@@ -27,6 +27,8 @@ enum Commands {
     Scan {
         #[arg(short, long)]
         input: PathBuf,
+
+        #[arg(short, long)]
         output_dir: PathBuf,
     },
     Generate {
@@ -35,17 +37,32 @@ enum Commands {
     },
 }
 
-fn scan(input: &PathBuf, output_dir: &PathBuf) {
-    let input_file_path = fs::canonicalize(&input).unwrap();
-    println!("Input File Path: {}", &input_file_path.display());
+fn sampled_mean(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rect: Rect) -> u16 {
+    let count = rect.width() * rect.height();
+    let mut total: u32 = 0;
 
+    for x in 0..rect.width() {
+        for y in 0..rect.height() {
+            let pixel = image.get_pixel(rect.left() as u32 + x, rect.top() as u32 + y);
+            total += pixel[0] as u32
+        }
+    }
+
+    return ((total as u32) / count) as u16;
+}
+
+fn scan(input: &PathBuf, output_dir: &PathBuf) {
+    let square_count = 101;
+    let input_file_path = fs::canonicalize(&input).unwrap();
     let output_dir = fs::canonicalize(&output_dir).unwrap();
-    println!("Outout File Path: {}", &output_dir.display());
-    let image = image::open(&input_file_path).unwrap().to_luma8();
-    let (width, height) = image.dimensions();
+
+    let image = image::open(&input_file_path).unwrap();
+    let image_16 = image.to_luma16();
+    let (width, height) = image_16.dimensions();
     println!("Width: {}", width);
     println!("Height: {}", height);
-    let edges_image = edges::canny(&image, 50.0, 100.0);
+
+    let edges_image = edges::canny(&image.to_luma8(), 50.0, 100.0);
     edges_image.save(output_dir.join("canny.png")).unwrap();
 
     // Detect lines using Hough transform
@@ -70,8 +87,37 @@ fn scan(input: &PathBuf, output_dir: &PathBuf) {
     let vertical_lines: Vec<&hough::PolarLine> =
         lines.iter().filter(|l| l.angle_in_degrees == 90).collect();
 
-    for vl in vertical_lines.iter() {
-        println!("Vertical Line: {:?}", vl);
+    let horizontal_lines: Vec<&hough::PolarLine> =
+        lines.iter().filter(|l| l.angle_in_degrees == 0).collect();
+
+    // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
+    // horizontal lines "r" is the same as the y coordinate.
+    if vertical_lines.len() < 11 || horizontal_lines.len() < 11 {
+        panic!("Failed to find all the lines");
+    }
+
+    let origin_x = vertical_lines[0].r as u32;
+    let origin_y = horizontal_lines[0].r as u32;
+    println!("Origin: ({}, {})", origin_x, origin_y);
+
+    // Find the distance between the first two lines. Use it to find our squares
+    let square_size = (vertical_lines[1].r - vertical_lines[0].r).floor() as u32;
+    println!("Square Size: {}", square_size);
+
+    let mut samples: Vec<u16> = vec![0; square_count];
+    let mut n = 0;
+    for row in 0..9 {
+        for col in 0..10 {
+            let x = origin_x + (col * square_size);
+            let y = origin_y + (row * square_size);
+
+            // Consider a stepped in margin to avoid oddities
+            let rect = Rect::at(x as i32, y as i32).of_size(square_size, square_size);
+            let sample = sampled_mean(&image_16, rect);
+            samples[n] = sample;
+            println!("Sample: {}: {:?} - {}", n, rect, sample);
+            n += 1;
+        }
     }
 }
 

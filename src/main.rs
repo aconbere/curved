@@ -6,11 +6,13 @@ use clap::{Parser, Subcommand};
 use image as im;
 use image::{DynamicImage, Luma};
 
-use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut};
+use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::edges;
 use imageproc::hough;
 use imageproc::map::map_pixels;
 use imageproc::rect::Rect;
+
+use ab_glyph::FontRef;
 
 #[derive(Parser, Debug)]
 #[command()]
@@ -80,6 +82,9 @@ fn scan(input: &PathBuf, output_dir: &PathBuf) {
  * divide the range by count then draw that value into each square
  */
 fn generate(output: &PathBuf) {
+    const FONT_BYTES: &[u8] = include_bytes!("../data/fonts/Lato-Black.ttf");
+    let font = FontRef::try_from_slice(FONT_BYTES).unwrap();
+
     let count = 101;
     let columns = 10;
     let rows = (count as f32 / columns as f32).ceil() as u32;
@@ -106,7 +111,20 @@ fn generate(output: &PathBuf) {
 
             let rect = Rect::at(x, y).of_size(square_size, square_size);
             let tone = interval * n;
+            let foreground_color = if n < count / 2 { u16::MAX } else { 0 };
+
             draw_filled_rect_mut(&mut image, rect, Luma([tone]));
+
+            draw_text_mut(
+                &mut image,
+                Luma([foreground_color]),
+                x + 5,
+                y + 5,
+                20 as f32,
+                &font,
+                format!("{}", n).as_str(),
+            );
+
             n += 1;
             if n == count {
                 break;
@@ -118,28 +136,21 @@ fn generate(output: &PathBuf) {
     for row in 0..rows {
         // flip the tone from the color of the first square in this line so that it
         // shows up in the dark and lights.
-        let inverted_tone = u16::MAX - (interval * (row as u16) * (columns as u16));
-        let y = ((row * square_size) + margin) as f32;
-        draw_line_segment_mut(
-            &mut image,
-            (margin as f32, y),
-            ((width - margin) as f32, y),
-            Luma([inverted_tone]),
-        );
+        let foreground_color = if row < rows / 2 { u16::MAX } else { 0 };
+        let y = ((row * square_size) + margin) as i32;
+        let squares_width = square_size * columns;
+        let rect = Rect::at(margin as i32, y).of_size(squares_width, 2);
+        draw_filled_rect_mut(&mut image, rect, Luma([foreground_color]));
     }
 
     // Draw the vertical grid lines
     for col in 0..(columns + 1) {
         // pick a generic middle grey
         let tone = u16::MAX / 2;
-        let x = ((col * square_size) + margin) as f32;
-
-        draw_line_segment_mut(
-            &mut image,
-            (x, margin as f32),
-            (x, (height - margin) as f32),
-            Luma([tone]),
-        );
+        let x = ((col * square_size) + margin) as i32;
+        let squares_height = square_size * rows;
+        let rect = Rect::at(x, margin as i32).of_size(2, squares_height);
+        draw_filled_rect_mut(&mut image, rect, Luma([tone]));
     }
 
     image.save(output).unwrap();

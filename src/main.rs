@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::prelude::*;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -83,7 +84,7 @@ fn draw_hough_lines_image(
  *
  */
 fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
-    let square_count = 101;
+    let square_count: u16 = 101;
     let input_file_path = fs::canonicalize(&input).unwrap();
     let output_dir = fs::canonicalize(&output_dir).unwrap();
 
@@ -143,7 +144,7 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
     let square_size = (vertical_lines[1].r - vertical_lines[0].r).floor() as u32;
     println!("Square Size: {}", square_size);
 
-    let mut samples: Vec<u16> = vec![0; square_count];
+    let mut samples: Vec<u16> = vec![0; square_count as usize];
     let mut n = 0;
     for row in 0..11 {
         for col in 0..10 {
@@ -160,16 +161,48 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
 
             let sample = sampled_mean(&image_16, rect);
             samples[n] = sample;
-            println!("Sample: {}: {:?} - {}", n, rect, sample);
+            if debug {
+                println!("Sample: {}: {:?} - {}", n, rect, sample);
+            }
             n += 1;
         }
     }
+
+    let expected_interval = u16::MAX / (square_count - 1);
+    let expected_values = (0..square_count).map(|x| x * expected_interval);
 
     // Now normalize the samples based on the maximum and minimum values
     // We expect for the max observed to be greater than zero and the minimum
     // to to less than u16::max. Assuming the print was printed to d-max then
     // we want to distribute our observed values evenly between max and min
-    // before applying a curve.
+    // before determining curve adjustments
+
+    let sample_min = samples.iter().min().unwrap();
+    let sample_max = samples.iter().max().unwrap();
+
+    let normalized_samples = samples
+        .iter()
+        .map(|s| (s - sample_min) * (u16::MAX / sample_max));
+
+    // assume a linear relationship, so every value of expected on the x
+    // axis should be expected on the y axis. Our observed values will be
+    // different. The curve is the delta.
+    let curve: Vec<(u16, u16, u16)> = expected_values
+        .zip(normalized_samples)
+        .map(|(e, n)| (e, n, e - (e - n)))
+        .collect();
+
+    let mut observed_file = fs::File::create(output_dir.join("observed.csv")).unwrap();
+    let mut curve_file = fs::File::create(output_dir.join("curve.csv")).unwrap();
+
+    for (exp, norm, cur) in curve {
+        observed_file
+            .write(format!("{},{}\n", exp, norm).as_bytes())
+            .unwrap();
+        curve_file
+            .write(format!("{},{}\n", exp, cur).as_bytes())
+            .unwrap();
+    }
 }
 
 /* generate takes an output path and creates a black and white stepwedge
@@ -208,12 +241,14 @@ fn generate(output: &PathBuf, _debug: bool) {
             let x = (margin + (col * square_size)) as i32;
             let y = (margin + (row * square_size)) as i32;
 
-            let rect = Rect::at(x, y).of_size(square_size, square_size);
             let tone = interval * n;
-            let foreground_color = if n < count / 2 { u16::MAX } else { 0 };
-
+            let rect = Rect::at(x, y).of_size(square_size, square_size);
             draw_filled_rect_mut(&mut image, rect, Luma([tone]));
 
+            // flip the foreground color half way through to preserve contrast
+            let foreground_color = if n < count / 2 { u16::MAX } else { 0 };
+
+            // draw a count on the square. this i useful for hand analysis
             draw_text_mut(
                 &mut image,
                 Luma([foreground_color]),
@@ -224,6 +259,7 @@ fn generate(output: &PathBuf, _debug: bool) {
                 format!("{}", n).as_str(),
             );
 
+            // stop when we reach count
             n += 1;
             if n == count {
                 break;
@@ -233,8 +269,7 @@ fn generate(output: &PathBuf, _debug: bool) {
 
     // Draw the horizontal grid lines
     for row in 0..rows {
-        // flip the tone from the color of the first square in this line so that it
-        // shows up in the dark and lights.
+        // Flip the foreground color from white to black half way through to preserve contrast
         let foreground_color = if row < rows / 2 { u16::MAX } else { 0 };
         let y = ((row * square_size) + margin) as i32;
         let squares_width = square_size * columns;

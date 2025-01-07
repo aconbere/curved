@@ -1,6 +1,28 @@
 # Curved
 
-Tools for working with and generating tonal curves.
+Tools for generating, analyzing, and applying tone curves to step wedges.
+
+## Building
+
+> cargo build
+
+## How to use Curved
+
+The first step to using curved is to generate a calibrated step wedge. Each step wedge is a 16bit greyscal image consisting of 101 steps from pure white to pure black. Running the following command will create such an step wedge in the file "test.png".
+
+> curved generate --output test.png
+
+Once you have a step wedge you need to print it onto transparency and then print it with the process your printing. Once you have your output print you should scan it. The higher quality the scan the better the software is at analysis, prefer a 16bit greyscale tif to anything else.
+
+With your scan in hand you can then analyze it. This will generate a file `curve.json` in the provided output directory. This encodes the correction curve that you'll want to apply to any subsequent images to correct for any issues.
+
+> curved analyze --input scan.tif --output-dir ./output
+
+Lastly now that you have a correction curve you can apply it to an image to print.
+
+> curved apply --input ./test.png --curve ./output/curve.json --output-dir ./output
+
+This will take the file in test.png and apply the curve.json correction curve, outputing the now corrected image to `./output/curved-test.png`
 
 ## Nice tools to have
 

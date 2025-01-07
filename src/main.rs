@@ -31,7 +31,7 @@ struct Args {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Adds files to myapp
-    Scan {
+    Analyze {
         #[arg(short, long)]
         input: PathBuf,
 
@@ -54,6 +54,9 @@ enum Commands {
     },
 }
 
+/* This is hardly "sampled" at this point. Instead it just finds the mean value
+ * of ALL of the pixels in the given Rect
+ */
 fn sampled_mean(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rect: Rect) -> u16 {
     let count = rect.width() * rect.height();
     let mut total: u32 = 0;
@@ -75,7 +78,6 @@ fn sampled_mean(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rect: Rect) -> u16 {
  * forward until finding the first output density larger than needle. Then reversing the search to
  * find the first output density smaller than needle. Interpolate the two input densities for our
  * resulting value.
- *
  */
 fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) -> u16 {
     let mut lower_bound_density: Option<u16> = None;
@@ -112,23 +114,6 @@ fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) 
         (None, Some(u)) => u,
         (Some(l), Some(u)) => (l / 2) + (u / 2),
     }
-
-    //let lower_bound_density = haystack
-    //    .into_iter()
-    //    .filter(|(_, output_density)| *output_density > needle)
-    //    .next();
-
-    //let upper_bound_density = haystack
-    //    .into_iter()
-    //    .filter(|(_, output_density)| *output_density < needle)
-    //    .next();
-
-    //match (lower_bound_density, upper_bound_density) {
-    //    (None, None) => panic!("uh oh"),
-    //    (Some((l, _)), None) => *l,
-    //    (None, Some((u, _))) => *u,
-    //    (Some((l, _)), Some((u, _))) => (l + u) / 2,
-    //}
 }
 
 fn draw_hough_lines_image(
@@ -149,6 +134,9 @@ fn draw_hough_lines_image(
     lines_image.save(&lines_path).unwrap();
 }
 
+/* Generate a spline (that can later be sampled from) based on the a vector of 2D points. Used for
+ * creating the correction curve.
+ */
 fn best_fit_spline(curve: &Vec<(u16, u16)>) -> Spline<f64, f64> {
     Spline::from_vec(
         curve
@@ -379,21 +367,16 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
         })
         .collect();
 
-    let mut observed_file = fs::File::create(output_dir.join("observed.csv")).unwrap();
-    let curve_file = fs::File::create(output_dir.join("curve.json")).unwrap();
-
-    for (e, s) in samples_with_expected_values.clone() {
-        observed_file
-            .write(format!("{},{}\n", e, s).as_bytes())
-            .unwrap();
+    if debug {
+        let mut observed_file = fs::File::create(output_dir.join("observed.csv")).unwrap();
+        for (e, s) in samples_with_expected_values.clone() {
+            observed_file
+                .write(format!("{},{}\n", e, s).as_bytes())
+                .unwrap();
+        }
     }
 
-    //for (e, s) in curve_points {
-    //    curve_file
-    //        .write(format!("{},{}\n", e, s).as_bytes())
-    //        .unwrap();
-    //}
-
+    let curve_file = fs::File::create(output_dir.join("curve.json")).unwrap();
     let curve = best_fit_spline(&curve_points);
     serde_json::to_writer(&curve_file, &curve).unwrap();
 }
@@ -490,7 +473,7 @@ fn main() {
     let args = Args::parse();
 
     match &args.command {
-        Commands::Scan { input, output_dir } => {
+        Commands::Analyze { input, output_dir } => {
             scan(&input, &output_dir, args.debug);
         }
         Commands::Generate { output } => {

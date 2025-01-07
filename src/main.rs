@@ -15,6 +15,9 @@ use imageproc::rect::Rect;
 
 use ab_glyph::FontRef;
 
+use serde_json;
+use splines::{Interpolation, Key, Spline};
+
 #[derive(Parser, Debug)]
 #[command()]
 struct Args {
@@ -31,6 +34,16 @@ enum Commands {
     Scan {
         #[arg(short, long)]
         input: PathBuf,
+
+        #[arg(short, long)]
+        output_dir: PathBuf,
+    },
+    Apply {
+        #[arg(short, long)]
+        input: PathBuf,
+
+        #[arg(short, long)]
+        curve: PathBuf,
 
         #[arg(short, long)]
         output_dir: PathBuf,
@@ -136,7 +149,41 @@ fn draw_hough_lines_image(
     lines_image.save(&lines_path).unwrap();
 }
 
-//fn best_fit_curve() {}
+fn best_fit_spline(curve: &Vec<(u16, u16)>) -> Spline<f64, f64> {
+    Spline::from_vec(
+        curve
+            .into_iter()
+            .map(|(input_density, output_density)| {
+                Key::new(
+                    *input_density as f64,
+                    *output_density as f64,
+                    Interpolation::default(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn apply(input_pathbuf: &PathBuf, curve_pathbuf: &PathBuf, output_pathbuf: &PathBuf, _debug: bool) {
+    let input_file_path = fs::canonicalize(&input_pathbuf).unwrap();
+    let curve_file_path = fs::canonicalize(&curve_pathbuf).unwrap();
+    let output_dir = fs::canonicalize(&output_pathbuf).unwrap();
+
+    let input_image = image::open(&input_file_path).unwrap();
+    let input_image_16 = input_image.to_luma16();
+
+    let curve_data = fs::read_to_string(curve_file_path).unwrap();
+    let curve = serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
+
+    let curved_image = map_pixels(&input_image_16, |_x, _y, p| {
+        Luma([curve.clamped_sample(p[0] as f64).unwrap() as u16])
+    });
+
+    let input_file_name = input_file_path.file_name().unwrap().to_str().unwrap();
+    curved_image
+        .save(output_dir.join(format!("curved-{}", input_file_name)))
+        .unwrap();
+}
 
 /* scan takes a path to a scanned image (input) and a path to a
  * directory to write its outputs.
@@ -156,7 +203,8 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
     let image = image::open(&input_file_path).unwrap();
     let image_16 = image.to_luma16();
 
-    // note: Once processing scans we'll want to scale the image appropriately
+    // note: Once processing scans we may want to scale the image
+    // to imporve processing time
     let (width, height) = image_16.dimensions();
     if debug {
         println!("Dimensions: ({}, {})", width, height);
@@ -332,7 +380,7 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
         .collect();
 
     let mut observed_file = fs::File::create(output_dir.join("observed.csv")).unwrap();
-    let mut curve_file = fs::File::create(output_dir.join("curve.csv")).unwrap();
+    let curve_file = fs::File::create(output_dir.join("curve.json")).unwrap();
 
     for (e, s) in samples_with_expected_values.clone() {
         observed_file
@@ -340,11 +388,14 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
             .unwrap();
     }
 
-    for (e, s) in curve_points {
-        curve_file
-            .write(format!("{},{}\n", e, s).as_bytes())
-            .unwrap();
-    }
+    //for (e, s) in curve_points {
+    //    curve_file
+    //        .write(format!("{},{}\n", e, s).as_bytes())
+    //        .unwrap();
+    //}
+
+    let curve = best_fit_spline(&curve_points);
+    serde_json::to_writer(&curve_file, &curve).unwrap();
 }
 
 /* generate takes an output path and creates a black and white stepwedge
@@ -444,6 +495,13 @@ fn main() {
         }
         Commands::Generate { output } => {
             generate(&output, args.debug);
+        }
+        Commands::Apply {
+            input,
+            output_dir,
+            curve,
+        } => {
+            apply(input, curve, output_dir, args.debug);
         }
     }
 }

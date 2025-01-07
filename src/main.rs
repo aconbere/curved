@@ -90,7 +90,9 @@ fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) 
                 break;
             }
 
-            let (input_density, _) = haystack[i - 1];
+            // if we found an exact match don't look backwards
+            let adjustment = if *output_density == needle { 0 } else { 1 };
+            let (input_density, _) = haystack[i - adjustment];
             lower_bound_density = Some(input_density);
             break;
         }
@@ -102,7 +104,10 @@ fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) 
                 upper_bound_density = Some(u16::MAX);
                 break;
             }
-            let (input_density, _) = haystack[(haystack.len() - 1) - i];
+            // if we found an exact match don't look backwards
+            let adjustment = if *output_density == needle { 0 } else { 1 };
+
+            let (input_density, _) = haystack[(haystack.len() - adjustment) - i];
             upper_bound_density = Some(input_density);
             break;
         }
@@ -112,7 +117,7 @@ fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) 
         (None, None) => panic!("Unable to map tones, value out of range"),
         (Some(l), None) => l,
         (None, Some(u)) => u,
-        (Some(l), Some(u)) => (l / 2) + (u / 2),
+        (Some(l), Some(u)) => (((l as u32) + (u as u32)) / 2) as u16,
     }
 }
 
@@ -173,17 +178,17 @@ fn apply(input_pathbuf: &PathBuf, curve_pathbuf: &PathBuf, output_pathbuf: &Path
         .unwrap();
 }
 
-/* scan takes a path to a scanned image (input) and a path to a
+/* analyze takes a path to a scanned image (input) and a path to a
  * directory to write its outputs.
  *
- * Scan looks at an input image assumed to be a scan of a print
+ * Analyze looks at an input image assumed to be a scan of a print
  * of the generated image from `generate`. It then searches that
  * image for the sequence of tonal values in each square and outputs
  * a curve adjustment that maps the scanned tonal values to a linear
  * tone curve.
  *
  */
-fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
+fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
     let square_count: u16 = 101;
     let input_file_path = fs::canonicalize(&input).unwrap();
     let output_dir = fs::canonicalize(&output_dir).unwrap();
@@ -467,7 +472,7 @@ fn main() {
 
     match &args.command {
         Commands::Analyze { input, output_dir } => {
-            scan(&input, &output_dir, args.debug);
+            analyze(&input, &output_dir, args.debug);
         }
         Commands::Generate { output } => {
             generate(&output, args.debug);
@@ -490,8 +495,8 @@ mod tests {
     fn test_sampled_mean_zero() {
         let buffer: ImageBuffer<Luma<u16>, Vec<u16>> = ImageBuffer::new(100, 100);
         let sub_image = SubImage::new(&buffer, 10, 10, 10, 10);
-        let results = sampled_mean(sub_image);
-        assert_eq!(results, 0);
+        let result = sampled_mean(sub_image);
+        assert_eq!(result, 0);
     }
 
     #[test]
@@ -503,7 +508,24 @@ mod tests {
             }
         }
         let sub_image = SubImage::new(&buffer, 10, 10, 10, 10);
-        let results = sampled_mean(sub_image);
-        assert_eq!(results, 210);
+        let result = sampled_mean(sub_image);
+        assert_eq!(result, 210);
+    }
+
+    #[test]
+    fn test_find_closest_matching_input_density() {
+        let haystack = vec![(1, 1), (2, 4), (3, 9), (4, 16), (5, 25)];
+        let mut result = find_closest_matching_input_density(&haystack, 2);
+        assert_eq!(result, 1);
+
+        result = find_closest_matching_input_density(&haystack, 5);
+        assert_eq!(result, 2);
+
+        result = find_closest_matching_input_density(&haystack, 19);
+        assert_eq!(result, 4);
+
+        // check an exact match
+        result = find_closest_matching_input_density(&haystack, 9);
+        assert_eq!(result, 3);
     }
 }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use image as im;
-use image::{DynamicImage, ImageBuffer, Luma};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, SubImage};
 
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::edges;
@@ -57,18 +57,18 @@ enum Commands {
 /* This is hardly "sampled" at this point. Instead it just finds the mean value
  * of ALL of the pixels in the given Rect
  */
-fn sampled_mean(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rect: Rect) -> u16 {
-    let count = rect.width() * rect.height();
+fn sampled_mean(image: SubImage<&ImageBuffer<Luma<u16>, Vec<u16>>>) -> u16 {
+    let (width, height) = image.dimensions();
     let mut total: u32 = 0;
 
-    for x in 0..rect.width() {
-        for y in 0..rect.height() {
-            let pixel = image.get_pixel(rect.left() as u32 + x, rect.top() as u32 + y);
+    for x in 0..width {
+        for y in 0..height {
+            let pixel = image.get_pixel(x, y);
             total += pixel[0] as u32
         }
     }
 
-    return ((total as u32) / count) as u16;
+    return (total / (width * height)) as u16;
 }
 
 /* Look through the haystack of (input_density, output_density) for the input density with the
@@ -259,16 +259,9 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
             let x = origin_x + (col * square_size);
             let y = origin_y + (row * square_size);
 
-            // Take the expected 100x100 pixel square at (x,y) and avoid the numbers in the top
-            // left as well as any line inconsistencies.
-            let rect = Rect::at((x + 25) as i32, (y + 25) as i32)
-                .of_size(square_size - 30, square_size - 30);
-
-            let sample = sampled_mean(&image_16, rect);
+            let view = image_16.view(x + 25, y + 25, square_size - 30, square_size - 30);
+            let sample = sampled_mean(view);
             samples[n] = sample;
-            if debug {
-                println!("Sample: {}: {:?} - {}", n, rect, sample);
-            }
             n += 1;
         }
     }
@@ -486,5 +479,31 @@ fn main() {
         } => {
             apply(input, curve, output_dir, args.debug);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sampled_mean_zero() {
+        let buffer: ImageBuffer<Luma<u16>, Vec<u16>> = ImageBuffer::new(100, 100);
+        let sub_image = SubImage::new(&buffer, 10, 10, 10, 10);
+        let results = sampled_mean(sub_image);
+        assert_eq!(results, 0);
+    }
+
+    #[test]
+    fn test_sampled_mean() {
+        let mut buffer: ImageBuffer<Luma<u16>, Vec<u16>> = ImageBuffer::new(100, 100);
+        for x in 0..100 {
+            for y in 0..100 {
+                buffer.put_pixel(x, y, Luma([(x * y) as u16]))
+            }
+        }
+        let sub_image = SubImage::new(&buffer, 10, 10, 10, 10);
+        let results = sampled_mean(sub_image);
+        assert_eq!(results, 210);
     }
 }

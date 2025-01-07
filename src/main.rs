@@ -55,6 +55,69 @@ fn sampled_mean(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rect: Rect) -> u16 {
     return ((total as u32) / count) as u16;
 }
 
+/* Look through the haystack of (input_density, output_density) for the input density with the
+ * output density that most closely matches needle.
+ *
+ * An exact match is unlikely, so instead build a range of values. First searching from the start
+ * forward until finding the first output density larger than needle. Then reversing the search to
+ * find the first output density smaller than needle. Interpolate the two input densities for our
+ * resulting value.
+ *
+ */
+fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) -> u16 {
+    let mut lower_bound_density: Option<u16> = None;
+    let mut upper_bound_density: Option<u16> = None;
+
+    for (i, (_, output_density)) in haystack.into_iter().enumerate() {
+        if *output_density >= needle {
+            if i == 0 {
+                lower_bound_density = Some(0);
+                break;
+            }
+
+            let (input_density, _) = haystack[i - 1];
+            lower_bound_density = Some(input_density);
+            break;
+        }
+    }
+
+    for (i, (_, output_density)) in haystack.into_iter().rev().enumerate() {
+        if *output_density <= needle {
+            if i == 0 {
+                upper_bound_density = Some(u16::MAX);
+                break;
+            }
+            let (input_density, _) = haystack[(haystack.len() - 1) - i];
+            upper_bound_density = Some(input_density);
+            break;
+        }
+    }
+
+    match (lower_bound_density, upper_bound_density) {
+        (None, None) => panic!("Unable to map tones, value out of range"),
+        (Some(l), None) => l,
+        (None, Some(u)) => u,
+        (Some(l), Some(u)) => (l / 2) + (u / 2),
+    }
+
+    //let lower_bound_density = haystack
+    //    .into_iter()
+    //    .filter(|(_, output_density)| *output_density > needle)
+    //    .next();
+
+    //let upper_bound_density = haystack
+    //    .into_iter()
+    //    .filter(|(_, output_density)| *output_density < needle)
+    //    .next();
+
+    //match (lower_bound_density, upper_bound_density) {
+    //    (None, None) => panic!("uh oh"),
+    //    (Some((l, _)), None) => *l,
+    //    (None, Some((u, _))) => *u,
+    //    (Some((l, _)), Some((u, _))) => (l + u) / 2,
+    //}
+}
+
 fn draw_hough_lines_image(
     edges_image: &ImageBuffer<Luma<u8>, Vec<u8>>,
     lines: &Vec<hough::PolarLine>,
@@ -72,6 +135,8 @@ fn draw_hough_lines_image(
     let lines_path = output_dir.join("lines.png");
     lines_image.save(&lines_path).unwrap();
 }
+
+//fn best_fit_curve() {}
 
 /* scan takes a path to a scanned image (input) and a path to a
  * directory to write its outputs.
@@ -138,11 +203,15 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
     // horizontal lines "r" is the same as the y coordinate.
     let origin_x = vertical_lines[0].r as u32;
     let origin_y = horizontal_lines[0].r as u32;
-    println!("Origin: ({}, {})", origin_x, origin_y);
+    if debug {
+        println!("Origin: ({}, {})", origin_x, origin_y);
+    }
 
     // Find the distance between the first two lines. Use it to find our squares
     let square_size = (vertical_lines[1].r - vertical_lines[0].r).floor() as u32;
-    println!("Square Size: {}", square_size);
+    if debug {
+        println!("Square Size: {}", square_size);
+    }
 
     let mut samples: Vec<u16> = vec![0; square_count as usize];
     let mut n = 0;
@@ -180,27 +249,100 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
     let sample_min = samples.iter().min().unwrap();
     let sample_max = samples.iter().max().unwrap();
 
-    let normalized_samples = samples
+    if debug {
+        println!("sample min: {}", sample_min);
+        println!("sample max: {}", sample_max);
+    }
+
+    /* example
+     *
+     * Suppose we have:
+     *  - a full range from [0, 65535] inclusive
+     *  - a subset in the range [256, 25280]
+     *
+     * If we want to expand the subset to fill the full range we can:
+     * subtract the minimum value from all the values in the subset to
+     * bring the minimum value to 0;
+     *
+     * subset - 256 => [0, 65024]
+     *
+     * Then we need to expand those values to fill up to 65535 by multiplying them
+     * by 65535 / our new max (65024)
+     */
+
+    let normalized_samples: Vec<u16> = samples
         .iter()
-        .map(|s| (s - sample_min) * (u16::MAX / sample_max));
+        .map(|s| (s - sample_min) * (u16::MAX / (sample_max - sample_min)))
+        .collect();
+
+    /* Use our own observed values to find where we should place
+     * our points to curve with
+     *
+     * Ax an example let's assume we have a table like below:
+     *
+     * ---
+     * i    exp     norm
+     * ---
+     * 1    0       0
+     * 2    655     648
+     * ...
+     * 15   6550    5000
+     * ...
+     * 20   9825    6576
+     * ...
+     * 101  65500   64800
+     * ---
+     *
+     * Using this we can figure out how to push our densities around to get a linear relationship.
+     *
+     * like take the 15th step. In a linear relationshop the input density of 6550 would be
+     * perfectly reflected in the observed density 6550 -> 6550. But in our real world test it
+     * didn't.
+     *
+     * So instead we want to search through our observed densities and figure out what input
+     * density did create an ouput of 6550. Looking we can see step 20 was close.
+     *
+     * So when mapping our values when we render a new 15 we want the density to be 9825 so that it
+     * achieve an output density close to 6550.
+     *
+     * We'll find our value by finding the largest input density that is still less than our
+     * target, and the least input density that is still greater than our density. We'll then use
+     * the midpoint.
+     */
 
     // assume a linear relationship, so every value of expected on the x
     // axis should be expected on the y axis. Our observed values will be
     // different. The curve is the delta.
-    let curve: Vec<(u16, u16, u16)> = expected_values
+
+    let samples_with_expected_values: Vec<(u16, u16)> = expected_values
+        .clone()
+        .into_iter()
         .zip(normalized_samples)
-        .map(|(e, n)| (e, n, e - (e - n)))
+        .collect();
+
+    let curve_points: Vec<(u16, u16)> = expected_values
+        .clone()
+        .into_iter()
+        .map(|e| {
+            (
+                e,
+                find_closest_matching_input_density(&samples_with_expected_values, e),
+            )
+        })
         .collect();
 
     let mut observed_file = fs::File::create(output_dir.join("observed.csv")).unwrap();
     let mut curve_file = fs::File::create(output_dir.join("curve.csv")).unwrap();
 
-    for (exp, norm, cur) in curve {
+    for (e, s) in samples_with_expected_values.clone() {
         observed_file
-            .write(format!("{},{}\n", exp, norm).as_bytes())
+            .write(format!("{},{}\n", e, s).as_bytes())
             .unwrap();
+    }
+
+    for (e, s) in curve_points {
         curve_file
-            .write(format!("{},{}\n", exp, cur).as_bytes())
+            .write(format!("{},{}\n", e, s).as_bytes())
             .unwrap();
     }
 }
@@ -211,7 +353,7 @@ fn scan(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
  *
  * divide the range by count then draw that value into each square
  */
-fn generate(output: &PathBuf, _debug: bool) {
+fn generate(output: &PathBuf, debug: bool) {
     const FONT_BYTES: &[u8] = include_bytes!("../data/fonts/Lato-Black.ttf");
     let font = FontRef::try_from_slice(FONT_BYTES).unwrap();
 
@@ -242,6 +384,9 @@ fn generate(output: &PathBuf, _debug: bool) {
             let y = (margin + (row * square_size)) as i32;
 
             let tone = interval * n;
+            if debug {
+                println!("tone: {}", tone);
+            }
             let rect = Rect::at(x, y).of_size(square_size, square_size);
             draw_filled_rect_mut(&mut image, rect, Luma([tone]));
 

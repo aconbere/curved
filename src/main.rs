@@ -46,7 +46,7 @@ enum Commands {
         curve: PathBuf,
 
         #[arg(short, long)]
-        output_dir: PathBuf,
+        output: PathBuf,
     },
     Generate {
         #[arg(short, long)]
@@ -59,16 +59,17 @@ enum Commands {
  */
 fn sampled_mean(image: SubImage<&ImageBuffer<Luma<u16>, Vec<u16>>>) -> u16 {
     let (width, height) = image.dimensions();
-    let mut total: u32 = 0;
+    let mut total: u64 = 0;
+    let count = (width * height) as u64;
 
     for x in 0..width {
         for y in 0..height {
             let pixel = image.get_pixel(x, y);
-            total += pixel[0] as u32
+            total += pixel[0] as u64
         }
     }
 
-    return (total / (width * height)) as u16;
+    return (total / count) as u16;
 }
 
 /* Look through the haystack of (input_density, output_density) for the input density with the
@@ -133,8 +134,14 @@ fn draw_hough_lines_image(
     // Convert edge image to colour
     let color_edges = map_pixels(edges_image, |_, _, p| if p[0] > 0 { white } else { black });
 
+    let horiz_and_vert_lines: Vec<hough::PolarLine> = lines
+        .into_iter()
+        .filter(|l| l.angle_in_degrees == 90 || l.angle_in_degrees == 0)
+        .map(|l| *l)
+        .collect();
+
     // Draw lines on top of edge image
-    let lines_image = hough::draw_polar_lines(&color_edges, &lines, green);
+    let lines_image = hough::draw_polar_lines(&color_edges, &horiz_and_vert_lines, green);
     let lines_path = output_dir.join("lines.png");
     lines_image.save(&lines_path).unwrap();
 }
@@ -160,7 +167,7 @@ fn best_fit_spline(curve: &Vec<(u16, u16)>) -> Spline<f64, f64> {
 fn apply(input_pathbuf: &PathBuf, curve_pathbuf: &PathBuf, output_pathbuf: &PathBuf, _debug: bool) {
     let input_file_path = fs::canonicalize(&input_pathbuf).unwrap();
     let curve_file_path = fs::canonicalize(&curve_pathbuf).unwrap();
-    let output_dir = fs::canonicalize(&output_pathbuf).unwrap();
+    let output_file_path = fs::canonicalize(&output_pathbuf).unwrap();
 
     let input_image = image::open(&input_file_path).unwrap();
     let input_image_16 = input_image.to_luma16();
@@ -172,10 +179,7 @@ fn apply(input_pathbuf: &PathBuf, curve_pathbuf: &PathBuf, output_pathbuf: &Path
         Luma([curve.clamped_sample(p[0] as f64).unwrap() as u16])
     });
 
-    let input_file_name = input_file_path.file_name().unwrap().to_str().unwrap();
-    curved_image
-        .save(output_dir.join(format!("curved-{}", input_file_name)))
-        .unwrap();
+    curved_image.save(output_file_path).unwrap();
 }
 
 /* analyze takes a path to a scanned image (input) and a path to a
@@ -203,6 +207,9 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
         println!("Dimensions: ({}, {})", width, height);
     }
 
+    if debug {
+        println!("Detecting Edges...");
+    }
     // Canny is an edge detection algorithm, it's the input to the hough transform
     // we'll use later to do line detection
     let edges_image = edges::canny(&image.to_luma8(), 50.0, 100.0);
@@ -211,6 +218,9 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
         edges_image.save(output_dir.join("canny.png")).unwrap();
     }
 
+    if debug {
+        println!("Finding Lines...");
+    }
     // Detect lines using Hough transform. The generated image uses lines to differentiate the
     // steps in the print This should allow us then to find those lines and then search the image
     // for our steps.
@@ -222,6 +232,10 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
 
     if debug {
         draw_hough_lines_image(&edges_image, &lines, &output_dir);
+    }
+
+    if debug {
+        println!("Searching for grid...");
     }
 
     // Note! In the future lines wont be perfectly alinged, I'll need to find
@@ -303,11 +317,26 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
      * Then we need to expand those values to fill up to 65535 by multiplying them
      * by 65535 / our new max (65024)
      */
+    let normalize_factor = (u16::MAX as f32) / ((sample_max - sample_min) as f32);
+
+    println!("dynamic range: {}", sample_max - sample_min);
+    println!("normalize_factor: {}", normalize_factor);
 
     let normalized_samples: Vec<u16> = samples
         .iter()
-        .map(|s| (s - sample_min) * (u16::MAX / (sample_max - sample_min)))
+        .map(|s| ((s - sample_min) as f32 * normalize_factor) as u16)
         .collect();
+
+    if debug {
+        let normalized_image = map_pixels(&image_16, |_, _, p| {
+            let new_v = p[0].checked_sub(*sample_min).unwrap_or(0);
+            Luma([(new_v as f32 * normalize_factor) as u16])
+        });
+
+        normalized_image
+            .save(output_dir.join("normalized.png"))
+            .unwrap();
+    }
 
     /* Use our own observed values to find where we should place
      * our points to curve with
@@ -479,10 +508,10 @@ fn main() {
         }
         Commands::Apply {
             input,
-            output_dir,
+            output,
             curve,
         } => {
-            apply(input, curve, output_dir, args.debug);
+            apply(input, curve, output, args.debug);
         }
     }
 }

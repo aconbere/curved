@@ -167,6 +167,7 @@ fn best_fit_spline(curve: &Vec<(u16, u16)>) -> Spline<f64, f64> {
 fn apply(input_pathbuf: &PathBuf, curve_pathbuf: &PathBuf, output_pathbuf: &PathBuf, _debug: bool) {
     let input_file_path = fs::canonicalize(&input_pathbuf).unwrap();
     let curve_file_path = fs::canonicalize(&curve_pathbuf).unwrap();
+
     let output_file_path = fs::canonicalize(&output_pathbuf).unwrap();
 
     let input_image = image::open(&input_file_path).unwrap();
@@ -327,12 +328,11 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
         .map(|s| ((s - sample_min) as f32 * normalize_factor) as u16)
         .collect();
 
+    let normalized_image = map_pixels(&image_16, |_, _, p| {
+        let new_v = p[0].checked_sub(*sample_min).unwrap_or(0);
+        Luma([(new_v as f32 * normalize_factor) as u16])
+    });
     if debug {
-        let normalized_image = map_pixels(&image_16, |_, _, p| {
-            let new_v = p[0].checked_sub(*sample_min).unwrap_or(0);
-            Luma([(new_v as f32 * normalize_factor) as u16])
-        });
-
         normalized_image
             .save(output_dir.join("normalized.png"))
             .unwrap();
@@ -401,11 +401,67 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) {
                 .write(format!("{},{}\n", e, s).as_bytes())
                 .unwrap();
         }
+        let mut curve_points_file = fs::File::create(output_dir.join("curve_points.csv")).unwrap();
+        for (e, s) in curve_points.clone() {
+            curve_points_file
+                .write(format!("{},{}\n", e, s).as_bytes())
+                .unwrap();
+        }
     }
 
-    let curve_file = fs::File::create(output_dir.join("curve.json")).unwrap();
     let curve = best_fit_spline(&curve_points);
+    let curve_file = fs::File::create(output_dir.join("curve.json")).unwrap();
     serde_json::to_writer(&curve_file, &curve).unwrap();
+
+    if debug {
+        let mut curve_image: ImageBuffer<im::Rgb<u8>, Vec<u8>> = ImageBuffer::new(1024, 1024);
+        draw_curve(&mut curve_image, &curve);
+
+        let histogram = create_histogram(&normalized_image);
+        //println!("Histogram: {:?}", histogram);
+        draw_histogram(&mut curve_image, &histogram);
+
+        curve_image.save(output_dir.join("curve.png")).unwrap();
+    }
+}
+
+// simple histogram of the image with 256 buckets
+fn create_histogram(image: &ImageBuffer<Luma<u16>, Vec<u16>>) -> Vec<u32> {
+    let mut histogram: Vec<u32> = vec![0; 256];
+
+    for (_, _, p) in image.enumerate_pixels() {
+        let bucket = (p[0] / 256) as usize;
+        histogram[bucket] = histogram[bucket].saturating_add(1)
+    }
+
+    histogram
+}
+
+fn draw_curve(image: &mut ImageBuffer<im::Rgb<u8>, Vec<u8>>, curve: &Spline<f64, f64>) {
+    for i in (0..u16::MAX).step_by(64) {
+        let green = im::Rgb::<u8>([0, 255, 0]);
+        let y = 1024 - (curve.clamped_sample(i as f64).unwrap() / 64.) as u32;
+        let x = (i / 64) as u32;
+        image.put_pixel(x, y, green);
+    }
+}
+
+fn draw_histogram(image: &mut ImageBuffer<im::Rgb<u8>, Vec<u8>>, histogram: &Vec<u32>) {
+    let white = im::Rgb::<u8>([255, 255, 255]);
+    let total: u32 = histogram.into_iter().sum();
+
+    for (i, value) in histogram.into_iter().enumerate() {
+        if i == 0 || i == 256 {
+            continue;
+        }
+        let scaled_percentage = (((*value as f32) / (total as f32)) * 1024. * 5.) as u32;
+
+        if scaled_percentage > 0 {
+            let x = (i * 4) as i32;
+            let rect = Rect::at(x, (1024 - scaled_percentage) as i32).of_size(4, scaled_percentage);
+            draw_filled_rect_mut(image, rect, white);
+        }
+    }
 }
 
 /* generate takes an output path and creates a black and white stepwedge

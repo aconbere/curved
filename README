@@ -29,3 +29,16 @@ This will take the file in test.png and apply the curve.json correction curve, o
 # tiffinfo
 
 > sudo apt install libtiff-tools
+
+## Explanation
+
+The goal is to understand how we need to modulate the digital tone so that our final print matches the digital rendering as closely as possible.
+
+To do this we generate a step wedge with a linear contrast scale; 101 from black to white in equal increments. Print that wedge onto transparency to create what's called a "digital negative", and then print the digital negative in the process we're studying (new cyanotype for example) to create an analog print.
+
+The result of this  process will be a print of 101 squares that do NOT go from black to white in equal increments. (in the case of the example I showed the black and white points were off). 
+
+Scanning the print we can then do a digital analysis of that image to understand example how NOT equal those increments are. The result of that analysis is a mapping from the input tonal value from the first step wedge, the value that would create the desired output tone in the second wedge. This function is called a "tone curve".
+
+As a final step we then generate a new step wedge, but this time with the tone curve applied. The new step wedge will look all wrong on our monitor, but when we make the analog print from it, it should (in theory), posses a close to linear tone curve that we expected.
+

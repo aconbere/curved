@@ -18,6 +18,8 @@ use ab_glyph::FontRef;
 use serde_json;
 use splines::{Interpolation, Key, Spline};
 
+mod gui;
+
 #[derive(Parser, Debug)]
 #[command()]
 struct Args {
@@ -52,6 +54,7 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
+    Gui {},
 }
 
 /* This is hardly "sampled" at this point. Instead it just finds the mean value
@@ -568,6 +571,9 @@ fn main() {
             curve,
         } => {
             apply(input, curve, output, args.debug);
+        }
+        Commands::Gui {} => {
+            gui::start(args.debug);
         }
     }
 }

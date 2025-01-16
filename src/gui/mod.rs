@@ -25,14 +25,10 @@ enum AnalyzeStates {
     Analyzed(analyze::AnalyzeResults),
 }
 
-enum ApplyStates {
-    WaitingForImageAndCurve(WaitingForImageAndCurveState),
-    Applied(AppliedState),
-}
-
-struct WaitingForImageAndCurveState {
+struct ApplyState {
     curve: Option<Spline<f64, f64>>,
     image: Option<DynamicImage>,
+    curved_image: Option<DynamicImage>,
 }
 
 struct GenerateState {
@@ -42,15 +38,13 @@ struct GenerateState {
 }
 
 
-struct AppliedState {}
-
 #[derive(Default)]
 enum AppStates {
     #[default]
     GenerateOrAnalyze,
     Analyze(AnalyzeStates),
     Generate(GenerateState),
-    Apply(ApplyStates),
+    Apply(ApplyState),
 }
 
 #[derive(Default)]
@@ -135,10 +129,14 @@ pub fn start(debug: bool) {
     println!("starting gui");
     println!("Debug: {}", debug);
 
-    let native_options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([500.0, 700.0]),
+        ..Default::default()
+    };
+
     eframe::run_native(
         "Curved",
-        native_options,
+        options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(CurvedApp::new(cc, debug)))
@@ -240,59 +238,57 @@ impl eframe::App for CurvedApp {
                         }
                     }
                 }
-                AppStates::Apply(apply_state) => match apply_state {
-                    ApplyStates::WaitingForImageAndCurve(image_and_curve) => {
-                        ui.heading("Apply Curve");
-                        ui.label("This tool will apply a curve generated from Analyze to an input image. Run this on an image in order to prep it for printing.");
+                AppStates::Apply(apply_state) => {
+                    ui.heading("Apply Curve");
+                    ui.label("This tool will apply a curve generated from Analyze to an input image. Run this on an image in order to prep it for printing.");
 
-                        // Maybe thing about adding an invert option?
-                        //
-                        if ui.button("Select Image").clicked() {
-                            if let Some(image_file) = rfd::FileDialog::new().pick_file() {
-                                let image = image::open(&image_file).unwrap();
-                                let preview = TextureBufferedImage::new(
-                                    image_file.clone().into_os_string().into_string().unwrap(),
-                                    &image,
-                                );
-                                image_and_curve.image = Some(image);
-                                self.preview = Some(preview);
-                            }
-                        };
-
-                        if ui.button("select curve").clicked() {
-                            if let Some(curve_file) = rfd::FileDialog::new().pick_file() {
-                                let curve_data = fs::read_to_string(curve_file).unwrap();
-                                let curve =
-                                    serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
-                                image_and_curve.curve = Some(curve);
-                            }
-                        };
-
-                        if let Some(preview) = &mut self.preview {
-                            preview.ui(ui);
+                    // Maybe thing about adding an invert option?
+                    //
+                    if ui.button("Select Image").clicked() {
+                        if let Some(image_file) = rfd::FileDialog::new().pick_file() {
+                            let image = image::open(&image_file).unwrap();
+                            let preview = TextureBufferedImage::new(
+                                image_file.clone().into_os_string().into_string().unwrap(),
+                                &image,
+                            );
+                            apply_state.image = Some(image);
+                            self.preview = Some(preview);
                         }
+                    };
 
+                    if ui.button("select curve").clicked() {
+                        if let Some(curve_file) = rfd::FileDialog::new().pick_file() {
+                            let curve_data = fs::read_to_string(curve_file).unwrap();
+                            let curve =
+                                serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
+                            apply_state.curve = Some(curve);
+                        }
+                    };
+
+                    if let Some(preview) = &mut self.preview {
+                        preview.ui(ui);
+                    }
+
+                    if let (Some(image), Some(curve)) = (&apply_state.image, &apply_state.curve) {
                         if ui.button("Apply").clicked() {
-                            if let (Some(image), Some(curve)) = (&image_and_curve.image, &image_and_curve.curve) {
-                                let curved_image = apply::apply(&image, &curve);
+                            let curved_image = apply::apply(&image, &curve);
 
-                                let preview = TextureBufferedImage::new(
-                                    "curved_image_preview".to_string(),
-                                    &curved_image,
-                                );
-                                self.preview = Some(preview);
-                            }
+                            let preview = TextureBufferedImage::new(
+                                "curved_image_preview".to_string(),
+                                &curved_image,
+                            );
+                            self.preview = Some(preview);
                         }
                     }
-                    // Maybe don't use a new state here but just shift the waiting state.
-                    ApplyStates::Applied(_applied_state) => {
+
+                    if let Some(curved_image) = apply_state.curved_image {
                         if ui.button("Save").clicked() {
-                            if let Some(_path) = rfd::FileDialog::new().save_file() {
-                                //save resulting image
+                            if let Some(path) = rfd::FileDialog::new().save_file() {
+                                curved_image.save(path).unwrap();
                             }
                         }
                     }
-                },
+                }
                 AppStates::Analyze(analyze_state) => {
                     ui.heading("Analyze Scan");
                     ui.separator();

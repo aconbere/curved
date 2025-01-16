@@ -11,8 +11,8 @@ use image::DynamicImage;
 use splines::Spline;
 
 use super::analyze;
-use super::generate;
 use super::apply;
+use super::generate;
 
 struct ImageState {
     path: PathBuf,
@@ -36,7 +36,6 @@ struct GenerateState {
     notes: String,
     image: Option<DynamicImage>,
 }
-
 
 #[derive(Default)]
 enum AppStates {
@@ -130,7 +129,7 @@ pub fn start(debug: bool) {
     println!("Debug: {}", debug);
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([500.0, 700.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 700.0]),
         ..Default::default()
     };
 
@@ -161,23 +160,31 @@ impl eframe::App for CurvedApp {
                     ui.heading("Curved");
                     ui.separator();
                     ui.add_space(12.0);
-
-                    ui.label("Curved is a tool to help you build tone adjustment curves for analog printing. To use it first generate a step wedge. Then go print the step wedge however you like. Scan the results and use the Analyze function to produce a tone adjustment curve. Finally you can apply the curve to an image with the Apply tool.");
+                    ui.label(
+                        "Curved is a tool to help you build tone adjustment curves for analog \
+                         printing. To use it first generate a step wedge. Then go print the step \
+                         wedge however you like. Scan the results and use the Analyze function to \
+                         produce a tone adjustment curve. Finally you can apply the curve to an \
+                         image with the Apply tool.",
+                    );
                     ui.add_space(12.0);
-                    
                     ui.heading("Generate Step Wedge");
                     ui.separator();
                     ui.label("Use this tool to build a fresh step wedge for your testing.");
                     if ui.button("Generate").clicked() {
-                        self.state = AppStates::Generate(GenerateState{
-                            process: "".to_string(), notes: "".to_string(), image: None,
+                        self.state = AppStates::Generate(GenerateState {
+                            process: "".to_string(),
+                            notes: "".to_string(),
+                            image: None,
                         });
                     }
                     ui.add_space(12.0);
 
                     ui.heading("Analyze Scan");
                     ui.separator();
-                    ui.label("Use this tool build a tone adjustment curve from the scan of your print.");
+                    ui.label(
+                        "Use this tool build a tone adjustment curve from the scan of your print.",
+                    );
                     if ui.button("Analyze").clicked() {
                         self.state = AppStates::Analyze(AnalyzeStates::WaitingForImage);
                     }
@@ -187,60 +194,68 @@ impl eframe::App for CurvedApp {
                     ui.separator();
                     ui.label("Use this tool apply a curve to an image you want to print.");
                     if ui.button("Apply").clicked() {
-                        self.state = AppStates::Apply(ApplyStates::WaitingForImageAndCurve(
-                            WaitingForImageAndCurveState {
-                                curve: None,
-                                image: None,
-                            },
-                        ));
+                        self.state = AppStates::Apply(ApplyState {
+                            curve: None,
+                            curved_image: None,
+                            image: None,
+                        });
                     }
                 }
                 AppStates::Generate(ref mut generate_state) => {
                     ui.heading("Generate Step Wedge");
-                    ui.label("Generates a step wedge for printing as a transparency. Output will be a 16bit greyscale image. It is generated in its \"inverted\" form and does not need to be further inverted before printing. A 300 dpi print should be about 5\"x5.25\".");
+                    ui.label(
+                        "Generates a step wedge for printing as a transparency. Output will be a \
+                         16bit greyscale image. It is generated in its \"inverted\" form and does \
+                         not need to be further inverted before printing. A 300 dpi print should \
+                         be about 5\"x5.25\".",
+                    );
 
-                    // Consider writing these to a label in the image
-                    // Maybe store a list of procesess to choose from
-                    // and add new ones?
-                    ui.label("Information here will be added to the negative so you can keep track of what this negative was for");
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
                             let process_label = ui.label("Process: ");
                             ui.text_edit_singleline(&mut generate_state.process)
                                 .labelled_by(process_label.id);
-                        });
-                        ui.horizontal(|ui| {
                             let notes_label = ui.label("Notes: ");
                             ui.text_edit_singleline(&mut generate_state.notes)
                                 .labelled_by(notes_label.id);
+                            if ui.button("Generate").clicked() {
+                                let image = generate::generate(self.debug);
+                                let preview = TextureBufferedImage::new(
+                                    format!(
+                                        "generated_step_wedge_{}_{}",
+                                        generate_state.process, generate_state.notes
+                                    ),
+                                    &image,
+                                );
+                                generate_state.image = Some(image);
+                                self.preview = Some(preview);
+                            }
+                        });
+
+                        egui::Frame::none().fill(egui::Color32::RED).show(ui, |ui| {
+                            ui.set_min_width(500.0);
+                            ui.set_min_height(500.0);
+                            if let Some(image) = &generate_state.image {
+                                ui.vertical(|ui| {
+                                    if let Some(preview) = &mut self.preview {
+                                        preview.ui(ui);
+                                    }
+                                    if ui.button("Save").clicked() {
+                                        if let Some(path) = rfd::FileDialog::new().save_file() {
+                                            image.save(path).unwrap();
+                                        }
+                                    }
+                                });
+                            }
                         });
                     });
-
-                    if ui.button("Generate").clicked() {
-                        let image = generate::generate(self.debug);
-                        let preview = TextureBufferedImage::new(
-                            format!("generated_step_wedge_{}_{}", generate_state.process, generate_state.notes),
-                            &image
-                        );
-                        generate_state.image  = Some(image);
-                        self.preview = Some(preview);
-
-                    }
-
-                    if let Some(image) = &generate_state.image {
-                        if let Some(preview) = &mut self.preview {
-                            preview.ui(ui);
-                        }
-                        if ui.button("Save").clicked() {
-                            if let Some(path) = rfd::FileDialog::new().save_file() {
-                                image.save(path).unwrap();
-                            }
-                        }
-                    }
                 }
                 AppStates::Apply(apply_state) => {
                     ui.heading("Apply Curve");
-                    ui.label("This tool will apply a curve generated from Analyze to an input image. Run this on an image in order to prep it for printing.");
+                    ui.label(
+                        "This tool will apply a curve generated from Analyze to an input image. \
+                         Run this on an image in order to prep it for printing.",
+                    );
 
                     // Maybe thing about adding an invert option?
                     //
@@ -281,7 +296,7 @@ impl eframe::App for CurvedApp {
                         }
                     }
 
-                    if let Some(curved_image) = apply_state.curved_image {
+                    if let Some(curved_image) = &apply_state.curved_image {
                         if ui.button("Save").clicked() {
                             if let Some(path) = rfd::FileDialog::new().save_file() {
                                 curved_image.save(path).unwrap();
@@ -294,7 +309,10 @@ impl eframe::App for CurvedApp {
                     ui.separator();
                     ui.add_space(12.0);
 
-                    ui.label("This tool will evaluate a scan of the generated step wedge to generate a new curve file.");
+                    ui.label(
+                        "This tool will evaluate a scan of the generated step wedge to generate a \
+                         new curve file.",
+                    );
 
                     match analyze_state {
                         AnalyzeStates::WaitingForImage => {
@@ -324,8 +342,9 @@ impl eframe::App for CurvedApp {
                                     let analyze_results =
                                         analyze::analyze(&image_state.image, self.debug).unwrap();
 
-                                    self.state =
-                                        AppStates::Analyze(AnalyzeStates::Analyzed(analyze_results));
+                                    self.state = AppStates::Analyze(AnalyzeStates::Analyzed(
+                                        analyze_results,
+                                    ));
                                 }
 
                                 ui.horizontal(|ui| {
@@ -341,12 +360,13 @@ impl eframe::App for CurvedApp {
                             if ui.button("save curve").clicked() {
                                 if let Some(path) = rfd::FileDialog::new().save_file() {
                                     let curve_file = fs::File::create(path).unwrap();
-                                    serde_json::to_writer(&curve_file, &analyze_results.curve).unwrap();
+                                    serde_json::to_writer(&curve_file, &analyze_results.curve)
+                                        .unwrap();
                                 }
                             }
                         }
                     }
-                },
+                }
             }
         });
     }

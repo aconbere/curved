@@ -2,12 +2,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use image::Luma;
-use imageproc::map::map_pixels;
 use serde_json;
 use splines::Spline;
 
 mod analyze;
+mod apply;
 mod generate;
 mod gui;
 
@@ -51,18 +50,13 @@ enum Commands {
 fn apply(input_pathbuf: &PathBuf, curve_pathbuf: &PathBuf, output_pathbuf: &PathBuf, _debug: bool) {
     let input_file_path = fs::canonicalize(&input_pathbuf).unwrap();
     let curve_file_path = fs::canonicalize(&curve_pathbuf).unwrap();
-
     let output_file_path = fs::canonicalize(&output_pathbuf).unwrap();
 
-    let input_image = image::open(&input_file_path).unwrap();
-    let input_image_16 = input_image.to_luma16();
-
+    let image = image::open(&input_file_path).unwrap();
     let curve_data = fs::read_to_string(curve_file_path).unwrap();
     let curve = serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
 
-    let curved_image = map_pixels(&input_image_16, |_x, _y, p| {
-        Luma([curve.clamped_sample(p[0] as f64).unwrap() as u16])
-    });
+    let curved_image = apply::apply(&image, &curve);
 
     curved_image.save(output_file_path).unwrap();
 }

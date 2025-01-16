@@ -1,5 +1,5 @@
 use ab_glyph::FontRef;
-use image::{DynamicImage, ImageBuffer, Luma};
+use image::{DynamicImage, Luma};
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 
@@ -9,7 +9,7 @@ use imageproc::rect::Rect;
  *
  * divide the range by count then draw that value into each square
  */
-pub fn generate(debug: bool) -> ImageBuffer<Luma<u16>, Vec<u16>> {
+pub fn generate(debug: bool) -> DynamicImage {
     const FONT_BYTES: &[u8] = include_bytes!("../data/fonts/Lato-Black.ttf");
     let font = FontRef::try_from_slice(FONT_BYTES).unwrap();
 
@@ -88,5 +88,5 @@ pub fn generate(debug: bool) -> ImageBuffer<Luma<u16>, Vec<u16>> {
         draw_filled_rect_mut(&mut image, rect, Luma([tone]));
     }
 
-    image
+    DynamicImage::ImageLuma16(image)
 }

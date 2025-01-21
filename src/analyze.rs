@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, SubImage};
 use imageproc::drawing::draw_filled_rect_mut;
 use imageproc::edges;
@@ -6,15 +7,11 @@ use imageproc::map::map_pixels;
 use imageproc::rect::Rect;
 use splines::{Interpolation, Key, Spline};
 
-#[derive(Debug)]
-pub enum AnalyzeError {
-    Err(String),
-}
-
 pub struct AnalyzeResults {
-    pub edges_image: ImageBuffer<Luma<u8>, Vec<u8>>,
-    pub normalized_image: ImageBuffer<Luma<u16>, Vec<u16>>,
+    pub edges_image: DynamicImage,
+    pub normalized_image: DynamicImage,
     pub curve: Spline<f64, f64>,
+    pub histogram: Vec<u32>,
 }
 
 /* analyze takes a path to a scanned image (input) and a path to a
@@ -27,7 +24,7 @@ pub struct AnalyzeResults {
  * tone curve.
  *
  */
-pub fn analyze(image: &DynamicImage, debug: bool) -> Result<AnalyzeResults, AnalyzeError> {
+pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResults> {
     let square_count: u16 = 101;
     let image_16 = image.to_luma16();
 
@@ -114,11 +111,12 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> Result<AnalyzeResults, Anal
     // we want to distribute our observed values evenly between max and min
     // before determining curve adjustments
 
-    let sample_min = samples.iter().min().ok_or(AnalyzeError::Err(
-        "No min sample found, no valid samples, check source image.".to_string(),
+    let sample_min = samples.iter().min().ok_or(anyhow!(
+        "No min sample found, no valid samples, check source image."
     ))?;
-    let sample_max = samples.iter().max().ok_or(AnalyzeError::Err(
-        "No max sample found, no valid samples, check source image.".to_string(),
+
+    let sample_max = samples.iter().max().ok_or(anyhow!(
+        "No max sample found, no valid samples, check source image.",
     ))?;
 
     if debug {
@@ -157,12 +155,6 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> Result<AnalyzeResults, Anal
         let new_v = p[0].saturating_sub(*sample_min);
         Luma([(new_v as f32 * normalize_factor) as u16])
     });
-
-    //if debug {
-    //    normalized_image
-    //        .save(output_dir.join("normalized.png"))
-    //        .unwrap();
-    //}
 
     /* Use our own observed values to find where we should place
      * our points to curve with
@@ -220,39 +212,13 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> Result<AnalyzeResults, Anal
         })
         .collect();
 
-    //if debug {
-    //    let mut observed_file = fs::File::create(output_dir.join("observed.csv")).unwrap();
-    //    for (e, s) in samples_with_expected_values.clone() {
-    //        observed_file
-    //            .write(format!("{},{}\n", e, s).as_bytes())
-    //            .unwrap();
-    //    }
-    //    let mut curve_points_file = fs::File::create(output_dir.join("curve_points.csv")).unwrap();
-    //    for (e, s) in curve_points.clone() {
-    //        curve_points_file
-    //            .write(format!("{},{}\n", e, s).as_bytes())
-    //            .unwrap();
-    //    }
-    //}
-
     let curve = best_fit_spline(&curve_points);
-    //let curve_file = fs::File::create(output_dir.join("curve.json")).unwrap();
-    //serde_json::to_writer(&curve_file, &curve).unwrap();
-
-    //if debug {
-    //    let mut curve_image: ImageBuffer<im::Rgb<u8>, Vec<u8>> = ImageBuffer::new(1024, 1024);
-    //    draw_curve(&mut curve_image, &curve);
-
-    //    let histogram = create_histogram(&normalized_image);
-    //    //println!("Histogram: {:?}", histogram);
-    //    draw_histogram(&mut curve_image, &histogram);
-
-    //    curve_image.save(output_dir.join("curve.png")).unwrap();
-    //}
+    let histogram = create_histogram(&normalized_image);
 
     Ok(AnalyzeResults {
-        edges_image,
-        normalized_image,
+        edges_image: DynamicImage::ImageLuma8(edges_image),
+        normalized_image: DynamicImage::ImageLuma16(normalized_image),
+        histogram,
         curve,
     })
 }
@@ -315,16 +281,23 @@ fn sampled_mean(image: SubImage<&ImageBuffer<Luma<u16>, Vec<u16>>>) -> u16 {
     return (total / count) as u16;
 }
 
-fn draw_curve(image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>, curve: &Spline<f64, f64>) {
+pub fn draw_curve(
+    image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>,
+    curve: &Spline<f64, f64>,
+) -> anyhow::Result<()> {
     for i in (0..u16::MAX).step_by(64) {
         let green = image::Rgb::<u8>([0, 255, 0]);
-        let y = 1024 - (curve.clamped_sample(i as f64).unwrap() / 64.) as u32;
+        let sample = curve
+            .clamped_sample(i as f64)
+            .ok_or(anyhow!("failed to sample spline"))?;
+        let y = 1024 - (sample / 64.) as u32;
         let x = (i / 64) as u32;
         image.put_pixel(x, y, green);
     }
+    Ok(())
 }
 
-fn draw_histogram(image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>, histogram: &Vec<u32>) {
+pub fn draw_histogram(image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>, histogram: &Vec<u32>) {
     let white = image::Rgb::<u8>([255, 255, 255]);
     let total: u32 = histogram.into_iter().sum();
 

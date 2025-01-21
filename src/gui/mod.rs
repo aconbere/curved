@@ -200,54 +200,72 @@ fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState, debug: bool) 
 }
 
 fn apply_page(ui: &mut egui::Ui, state: &mut ApplyPageState) {
-    if ui.button("Select Image").clicked() {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
-            let image = image::open(&path).unwrap();
-            let preview = TextureBufferedImage::new(
-                path.clone().into_os_string().into_string().unwrap(),
-                &image,
-            );
-            state.image = Some(PreviewedImage {
-                path,
-                image,
-                preview,
+    egui::SidePanel::left("side_bar")
+        .min_width(325.0)
+        .show_inside(ui, |ui| {
+            if ui.button("Select Image").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    let image = image::open(&path).unwrap();
+                    let preview = TextureBufferedImage::new(
+                        path.clone().into_os_string().into_string().unwrap(),
+                        &image,
+                    );
+                    state.image = Some(PreviewedImage {
+                        path,
+                        image,
+                        preview,
+                    });
+                }
+            };
+        });
+
+    egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::TopBottomPanel::bottom("controls")
+            .min_height(32.0)
+            .show_inside(ui, |ui| {
+                if state.curved_image.is_some() {
+                    ui.horizontal(|ui| {
+                        if let Some(ci) = &state.curved_image {
+                            if ui.button("Save").clicked() {
+                                if let Some(path) = rfd::FileDialog::new().save_file() {
+                                    ci.image.save(path).unwrap();
+                                }
+                            }
+                            if ui.button("Undo").clicked() {
+                                state.curved_image = None;
+                            }
+                        }
+                    });
+                } else if let Some(image) = &state.image {
+                    if ui.button("Apply Curve").clicked() {
+                        if let Some(curve_file) = rfd::FileDialog::new().pick_file() {
+                            let curve_data = fs::read_to_string(curve_file).unwrap();
+                            let curve =
+                                serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
+                            let curved_image = apply::apply(&image.image, &curve);
+                            state.curve = Some(curve);
+
+                            let preview = TextureBufferedImage::new(
+                                "curved_image_preview".to_string(),
+                                &curved_image,
+                            );
+                            state.curved_image = Some(PreviewedImage {
+                                path: image.path.clone(),
+                                image: curved_image,
+                                preview,
+                            });
+                        }
+                    };
+                }
             });
-        }
-    };
-
-    if ui.button("select curve").clicked() {
-        if let Some(curve_file) = rfd::FileDialog::new().pick_file() {
-            let curve_data = fs::read_to_string(curve_file).unwrap();
-            let curve = serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
-            state.curve = Some(curve);
-        }
-    };
-
-    if let Some(image) = &mut state.image {
-        image.preview.ui(ui);
-    }
-
-    if let (Some(image), Some(curve)) = (&state.image, &state.curve) {
-        if ui.button("Apply").clicked() {
-            let curved_image = apply::apply(&image.image, &curve);
-
-            let preview =
-                TextureBufferedImage::new("curved_image_preview".to_string(), &curved_image);
-            state.curved_image = Some(PreviewedImage {
-                path: image.path.clone(),
-                image: curved_image,
-                preview,
-            });
-        }
-    }
-
-    if let Some(curved_image) = &state.curved_image {
-        if ui.button("Save").clicked() {
-            if let Some(path) = rfd::FileDialog::new().save_file() {
-                curved_image.image.save(path).unwrap();
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            if let Some(ci) = &mut state.curved_image {
+                ci.preview.ui(ui);
+            } else if let Some(image) = &mut state.image {
+                image.preview.ui(ui);
             }
-        }
-    }
+        });
+    });
 }
 
 fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {

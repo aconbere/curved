@@ -28,3 +28,4 @@ jobs:
           TOOLCHAIN_VERSION: nightly
           RUSTTARGET: ${{ matrix.target }}
           UPLOAD_MODE: ${{ matrix.archive }}
+          MACOSX_DEPLOYMENT_TARGET: "10.10.0"

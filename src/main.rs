@@ -10,6 +10,7 @@ mod analyze;
 mod apply;
 mod generate;
 mod gui;
+mod step_description;
 
 #[derive(Parser, Debug)]
 #[command()]
@@ -88,9 +89,8 @@ fn generate(
     output_path: &PathBuf,
     process: Option<String>,
     notes: Option<String>,
-    debug: bool,
 ) -> anyhow::Result<()> {
-    let image = generate::generate(process, notes, debug)?;
+    let image = generate::generate(process, notes)?;
     image.save(output_path)?;
     Ok(())
 }
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
             notes,
             output,
         } => {
-            generate(output, process.clone(), notes.clone(), args.debug)?;
+            generate(output, process.clone(), notes.clone())?;
         }
         Commands::Apply {
             input,

@@ -153,7 +153,7 @@ fn tab_bar(ui: &mut egui::Ui, app: &mut CurvedApp) {
         });
 }
 
-fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState, debug: bool) {
+fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState) {
     let mut process = state.process.clone();
     let mut notes = state.notes.clone();
 
@@ -191,7 +191,7 @@ fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState, debug: bool) 
                 } else {
                     Some(process.clone())
                 };
-                let image = generate::generate(no, pr, debug).unwrap();
+                let image = generate::generate(no, pr).unwrap();
                 let preview = TextureBufferedImage::new(
                     format!("generated_step_wedge_{}_{}", state.process, state.notes),
                     &image,
@@ -425,7 +425,7 @@ impl eframe::App for CurvedApp {
             tab_bar(ui, self);
             match &mut self.page {
                 Page::Generate => {
-                    generate_page(ui, &mut self.generate_page_state, self.debug);
+                    generate_page(ui, &mut self.generate_page_state);
                 }
                 Page::Apply => {
                     apply_page(ui, &mut self.apply_page_state);

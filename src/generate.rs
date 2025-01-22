@@ -1,11 +1,16 @@
 use ab_glyph::FontRef;
 use anyhow;
-use image::{DynamicImage, Luma};
+use image::{DynamicImage, ImageBuffer, Luma};
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 
-const BLACK: u16 = 0;
-const WHITE: u16 = u16::MAX;
+use super::step_description::StepDescription;
+
+type Gray16Image = ImageBuffer<Luma<u16>, Vec<u16>>;
+
+const BLACK: u32 = 0;
+
+const LATO_BLACK_BYTES: &[u8] = include_bytes!("../data/fonts/Lato-Black.ttf");
 
 /* Creates a new step wedge image
  * 0 is black
@@ -13,120 +18,160 @@ const WHITE: u16 = u16::MAX;
  *
  * divide the range by count then draw that value into each square
  */
-pub fn generate(
-    process: Option<String>,
-    notes: Option<String>,
-    debug: bool,
-) -> anyhow::Result<DynamicImage> {
-    const LATO_BLACK_BYTES: &[u8] = include_bytes!("../data/fonts/Lato-Black.ttf");
+pub fn generate(process: Option<String>, notes: Option<String>) -> anyhow::Result<DynamicImage> {
     let font_lato_black = FontRef::try_from_slice(LATO_BLACK_BYTES)?;
 
-    let count = 101;
-    let columns = 10;
-    let rows = (count as f32 / columns as f32).ceil() as u32;
+    //  pixels on the margin of the image
+    let start_x = 10;
+    let start_y = 10;
 
-    // number of pixels each square
-    let square_size: u32 = 100;
+    let step_description = StepDescription::new(101, 10, 1000, u16::MAX as u32);
+    println!("Running with steps: {:?}", step_description);
 
-    // count of pixels on the margin of the image
-    let margin = 10;
+    let mut image: Gray16Image =
+        ImageBuffer::new(step_description.width + 20, step_description.height + 20);
+    draw_steps(
+        &mut image,
+        &font_lato_black,
+        &step_description,
+        start_x,
+        start_y,
+    );
 
-    let width = columns * square_size + (margin * 2);
-    let height = (rows * square_size) + (margin * 2);
+    draw_grid(&mut image, &step_description, start_x, start_y);
 
-    let mut image = DynamicImage::new_luma16(width, height).to_luma16();
+    let process_and_notes_x = start_x + step_description.square_size;
+    let process_and_notes_y =
+        start_y + (step_description.square_size * (step_description.rows - 1));
+    draw_process_and_notes(
+        &mut image,
+        &font_lato_black,
+        &step_description,
+        process_and_notes_x,
+        process_and_notes_y,
+        process,
+        notes,
+    );
 
-    // the amount that each square increases as we go towards max
-    // Note that because we start at zero we want 100 equal chunks
-    // to filled up 101 times
-    let interval = WHITE / (count - 1);
+    Ok(DynamicImage::ImageLuma16(image))
+}
 
+fn draw_steps(
+    image: &mut Gray16Image,
+    font: &FontRef,
+    step_description: &StepDescription,
+    start_x: u32,
+    start_y: u32,
+) {
     let mut n = 0;
-    for row in 0..rows {
-        for col in 0..columns {
-            let x = (margin + (col * square_size)) as i32;
-            let y = (margin + (row * square_size)) as i32;
-
-            let tone = interval * n;
-            if debug {
-                println!("tone: {}", tone);
+    for row in 0..step_description.rows {
+        for col in 0..step_description.columns {
+            // stop when we reach count
+            if n >= step_description.count {
+                break;
             }
-            let rect = Rect::at(x, y).of_size(square_size, square_size);
-            draw_filled_rect_mut(&mut image, rect, Luma([tone]));
+            let x = start_x + (col * step_description.square_size);
+            let y = start_y + (row * step_description.square_size);
+            let tone = step_description.interval * n;
+
+            let rect = Rect::at(x as i32, y as i32)
+                .of_size(step_description.square_size, step_description.square_size);
+            draw_filled_rect_mut(image, rect, Luma([tone as u16]));
 
             // flip the foreground color half way through to preserve contrast
-            let foreground_color = if n < count / 2 { WHITE } else { BLACK };
+            let foreground_color = if n < step_description.count / 2 {
+                step_description.max_tone
+            } else {
+                BLACK
+            };
 
             // draw a count on the square. this i useful for hand analysis
             draw_text_mut(
-                &mut image,
-                Luma([foreground_color]),
-                x + 5,
-                y + 5,
+                image,
+                Luma([foreground_color as u16]),
+                x as i32 + 5,
+                y as i32 + 5,
                 20 as f32,
-                &font_lato_black,
-                format!("{}", n).as_str(),
+                font,
+                &format!("{}", n),
             );
 
-            // stop when we reach count
             n += 1;
-            if n == count {
-                break;
-            }
         }
     }
+}
 
+fn draw_grid(
+    image: &mut Gray16Image,
+    step_description: &StepDescription,
+    start_x: u32,
+    start_y: u32,
+) {
     // Draw the horizontal grid lines
-    for row in 0..rows {
+    for row in 0..step_description.rows {
         // Flip the foreground color from white to black half way through to preserve contrast
-        let foreground_color = if row < rows / 2 { WHITE } else { BLACK };
-        let y = ((row * square_size) + margin) as i32;
-        let squares_width = square_size * columns;
-        let rect = Rect::at(margin as i32, y).of_size(squares_width, 2);
-        draw_filled_rect_mut(&mut image, rect, Luma([foreground_color]));
+        let foreground_color = if row < step_description.rows / 2 {
+            step_description.max_tone
+        } else {
+            BLACK
+        };
+        let y = ((row * step_description.square_size) + start_y) as i32;
+        let squares_width = step_description.square_size * step_description.columns;
+        let rect = Rect::at(start_x as i32, y).of_size(squares_width, 2);
+
+        draw_filled_rect_mut(image, rect, Luma([foreground_color as u16]));
     }
 
     // Draw the vertical grid lines
-    for col in 0..(columns + 1) {
+    for col in 0..(step_description.columns + 1) {
         // pick a generic middle grey
-        let tone = WHITE / 2;
-        let x = ((col * square_size) + margin) as i32;
+        let tone = step_description.max_tone / 2;
+        let x = ((col * step_description.square_size) + start_x) as i32;
 
         // stop early after the first row so we can have some
         // room to draw text for notes and process
-        let squares_height = if col > 0 {
-            square_size * (rows - 1)
+        let height = if col > 0 {
+            step_description.square_size * (step_description.rows - 1)
         } else {
-            square_size * rows
+            step_description.square_size * step_description.rows
         };
-        let rect = Rect::at(x, margin as i32).of_size(2, squares_height);
-        draw_filled_rect_mut(&mut image, rect, Luma([tone]));
-    }
 
-    let notes_and_process_x = (margin + square_size + 25) as i32;
-    let notes_and_process_y = (margin + (square_size * (rows - 1)) + 25) as i32;
+        let rect = Rect::at(x, start_y as i32).of_size(2, height);
+        draw_filled_rect_mut(image, rect, Luma([tone as u16]));
+    }
+}
+
+fn draw_process_and_notes(
+    image: &mut Gray16Image,
+    font: &FontRef,
+    step_description: &StepDescription,
+    start_x: u32,
+    start_y: u32,
+    process: Option<String>,
+    notes: Option<String>,
+) {
+    let margin = 25;
     if let Some(notes) = notes {
         draw_text_mut(
-            &mut image,
-            Luma([WHITE]),
-            notes_and_process_x,
-            notes_and_process_y,
+            image,
+            Luma([step_description.max_tone as u16]),
+            start_x as i32 + margin,
+            start_y as i32 + margin,
             20 as f32,
-            &font_lato_black,
+            font,
             format!("Process: {}", notes).as_str(),
         );
     }
     if let Some(process) = process {
         // Draw notes and process
         draw_text_mut(
-            &mut image,
-            Luma([WHITE]),
-            notes_and_process_x,
-            notes_and_process_y + 20,
+            image,
+            Luma([step_description.max_tone as u16]),
+            start_x as i32 + margin,
+            start_y as i32 + margin + 20,
             20 as f32,
-            &font_lato_black,
+            font,
             format!("Notes: {}", process).as_str(),
         );
     }
-    Ok(DynamicImage::ImageLuma16(image))
 }

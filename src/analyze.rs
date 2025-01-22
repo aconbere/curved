@@ -7,6 +7,8 @@ use imageproc::map::map_pixels;
 use imageproc::rect::Rect;
 use splines::{Interpolation, Key, Spline};
 
+use super::step_description::StepDescription;
+
 pub struct AnalyzeResults {
     pub edges_image: DynamicImage,
     pub normalized_image: DynamicImage,
@@ -25,22 +27,30 @@ pub struct AnalyzeResults {
  *
  */
 pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResults> {
-    let square_count: u16 = 101;
+    let step_description = StepDescription::new(101, 10, 1000, u16::MAX as u32);
+
+    // convert to a 16bit Greyscale image this is our working set
     let image_16 = image.to_luma16();
+
+    // conver to 8bit greyscale used for edge / line detection
+    let image_8 = image.to_luma8();
 
     if debug {
         println!("Detecting Edges...");
     }
+
     // Canny is an edge detection algorithm, it's the input to the hough transform
     // we'll use later to do line detection
-    let edges_image = edges::canny(&image.to_luma8(), 50.0, 100.0);
+    let edges_image = edges::canny(&image_8, 50.0, 100.0);
 
     if debug {
         println!("Finding Lines...");
     }
+
     // Detect lines using Hough transform. The generated image uses lines to differentiate the
     // steps in the print This should allow us then to find those lines and then search the image
-    // for our steps.
+    // for our steps. Vote and suppression values were determined through trial and error, there
+    // may be more effective values.
     let options = hough::LineDetectionOptions {
         vote_threshold: 200,
         suppression_radius: 8,
@@ -68,7 +78,9 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
 
     // Safety check to make sure our image is clear enough to find all the lines
     if vertical_lines.len() < 11 || horizontal_lines.len() < 11 {
-        panic!("Failed to find all the lines");
+        return Err(anyhow!(
+            "Failed to find sufficient lines for step detection"
+        ));
     }
 
     // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
@@ -85,7 +97,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
         println!("Square Size: {}", square_size);
     }
 
-    let mut samples: Vec<u16> = vec![0; square_count as usize];
+    let mut samples: Vec<u16> = vec![0; step_description.count as usize];
     let mut n = 0;
     for row in 0..11 {
         for col in 0..10 {
@@ -102,8 +114,8 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
         }
     }
 
-    let expected_interval = u16::MAX / (square_count - 1);
-    let expected_values = (0..square_count).map(|x| x * expected_interval);
+    let expected_interval = (step_description.max_tone / (step_description.count - 1)) as u16;
+    let expected_values = (0..step_description.count).map(|x| x as u16 * expected_interval);
 
     // Now normalize the samples based on the maximum and minimum values
     // We expect for the max observed to be greater than zero and the minimum
@@ -139,7 +151,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
      * Then we need to expand those values to fill up to 65535 by multiplying them
      * by 65535 / our new max (65024)
      */
-    let normalize_factor = (u16::MAX as f32) / ((sample_max - sample_min) as f32);
+    let normalize_factor = (step_description.max_tone as f32) / ((sample_max - sample_min) as f32);
 
     if debug {
         println!("dynamic range: {}", sample_max - sample_min);
@@ -201,18 +213,15 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
         .zip(normalized_samples)
         .collect();
 
-    let curve_points: Vec<(u16, u16)> = expected_values
+    let curve_points: anyhow::Result<Vec<(u16, u16)>> = expected_values
         .clone()
         .into_iter()
         .map(|e| {
-            (
-                e,
-                find_closest_matching_input_density(&samples_with_expected_values, e),
-            )
+            find_closest_matching_input_density(&samples_with_expected_values, e).map(|c| (e, c))
         })
         .collect();
 
-    let curve = best_fit_spline(&curve_points);
+    let curve = best_fit_spline(&curve_points?);
     let histogram = create_histogram(&normalized_image);
 
     Ok(AnalyzeResults {
@@ -323,7 +332,10 @@ pub fn draw_histogram(image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>, histogra
  * find the first output density smaller than needle. Interpolate the two input densities for our
  * resulting value.
  */
-fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) -> u16 {
+fn find_closest_matching_input_density(
+    haystack: &Vec<(u16, u16)>,
+    needle: u16,
+) -> anyhow::Result<u16> {
     let mut lower_bound_density: Option<u16> = None;
     let mut upper_bound_density: Option<u16> = None;
 
@@ -357,12 +369,16 @@ fn find_closest_matching_input_density(haystack: &Vec<(u16, u16)>, needle: u16) 
         }
     }
 
-    match (lower_bound_density, upper_bound_density) {
-        (None, None) => panic!("Unable to map tones, value out of range"),
+    let closest = match (lower_bound_density, upper_bound_density) {
+        (None, None) => {
+            return Err(anyhow!("Unable to map tones, value out of range"));
+        }
         (Some(l), None) => l,
         (None, Some(u)) => u,
         (Some(l), Some(u)) => (((l as u32) + (u as u32)) / 2) as u16,
-    }
+    };
+
+    Ok(closest)
 }
 
 // simple histogram of the image with 256 buckets
@@ -405,17 +421,17 @@ mod tests {
     #[test]
     fn test_find_closest_matching_input_density() {
         let haystack = vec![(1, 1), (2, 4), (3, 9), (4, 16), (5, 25)];
-        let mut result = find_closest_matching_input_density(&haystack, 2);
+        let mut result = find_closest_matching_input_density(&haystack, 2).unwrap();
         assert_eq!(result, 1);
 
-        result = find_closest_matching_input_density(&haystack, 5);
+        result = find_closest_matching_input_density(&haystack, 5).unwrap();
         assert_eq!(result, 2);
 
-        result = find_closest_matching_input_density(&haystack, 19);
+        result = find_closest_matching_input_density(&haystack, 19).unwrap();
         assert_eq!(result, 4);
 
         // check an exact match
-        result = find_closest_matching_input_density(&haystack, 9);
+        result = find_closest_matching_input_density(&haystack, 9).unwrap();
         assert_eq!(result, 3);
     }
 }

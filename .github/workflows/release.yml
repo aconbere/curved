@@ -1,9 +1,8 @@
-# .github/workflows/build.yml
-name: Build
+name: Release
 
 on:
   release:
-    branches: [created]
+    types: [created]
 
 jobs:
   release:
@@ -26,6 +25,7 @@ jobs:
         uses: rust-build/rust-build.action@v1.4.5
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.10.0"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           TOOLCHAIN_VERSION: nightly
           RUSTTARGET: ${{ matrix.target }}

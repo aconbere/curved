@@ -10,7 +10,7 @@ use splines::{Interpolation, Key, Spline};
 use super::step_description::StepDescription;
 
 pub struct AnalyzeResults {
-    pub edges_image: DynamicImage,
+    pub lines_image: DynamicImage,
     pub normalized_image: DynamicImage,
     pub curve: Spline<f64, f64>,
     pub histogram: Vec<u32>,
@@ -57,9 +57,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     };
     let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
 
-    if debug {
-        generate_hough_lines_image(&edges_image, &lines);
-    }
+    let lines_image = generate_hough_lines_image(&edges_image, &lines);
 
     if debug {
         println!("Searching for grid...");
@@ -225,7 +223,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     let histogram = create_histogram(&normalized_image);
 
     Ok(AnalyzeResults {
-        edges_image: DynamicImage::ImageLuma8(edges_image),
+        lines_image: DynamicImage::ImageRgb8(lines_image),
         normalized_image: DynamicImage::ImageLuma16(normalized_image),
         histogram,
         curve,
@@ -250,8 +248,7 @@ fn generate_hough_lines_image(
         .collect();
 
     // Draw lines on top of edge image
-    hough::draw_polar_lines(&color_edges, &horiz_and_vert_lines, green);
-    color_edges
+    hough::draw_polar_lines(&color_edges, &horiz_and_vert_lines, green)
 }
 
 /* Generate a spline (that can later be sampled from) based on the a vector of 2D points. Used for

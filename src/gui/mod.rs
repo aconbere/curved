@@ -86,8 +86,8 @@ fn draw_analyze_preview(
 ) -> anyhow::Result<TextureBufferedImage> {
     let mut image: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
         image::ImageBuffer::new(1024, 1024);
+    analyze::draw_histogram(&mut image, &histogram)?;
     analyze::draw_curve(&mut image, &curve)?;
-    analyze::draw_histogram(&mut image, &histogram);
     Ok(TextureBufferedImage::new(
         format!("curve_and_histogram"),
         &DynamicImage::ImageRgb8(image),

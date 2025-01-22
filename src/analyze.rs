@@ -303,22 +303,30 @@ pub fn draw_curve(
     Ok(())
 }
 
-pub fn draw_histogram(image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>, histogram: &Vec<u32>) {
-    let white = image::Rgb::<u8>([255, 255, 255]);
-    let total: u32 = histogram.into_iter().sum();
+pub fn draw_histogram(
+    image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>,
+    histogram: &Vec<u32>,
+) -> anyhow::Result<()> {
+    let grey = image::Rgb::<u8>([128, 128, 128]);
+
+    let max = histogram
+        .into_iter()
+        .max()
+        .ok_or(anyhow!("could not find maximum histogram value"))?;
 
     for (i, value) in histogram.into_iter().enumerate() {
         if i == 0 || i == 256 {
             continue;
         }
-        let scaled_percentage = (((*value as f32) / (total as f32)) * 1024. * 5.) as u32;
+        let scaled_percentage = (((*value as f32) / (*max as f32)) * 1024. * 5.) as u32;
 
         if scaled_percentage > 0 {
             let x = (i * 4) as i32;
             let rect = Rect::at(x, (1024 - scaled_percentage) as i32).of_size(4, scaled_percentage);
-            draw_filled_rect_mut(image, rect, white);
+            draw_filled_rect_mut(image, rect, grey);
         }
     }
+    Ok(())
 }
 
 /* Look through the haystack of (input_density, output_density) for the input density with the

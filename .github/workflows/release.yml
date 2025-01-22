@@ -24,8 +24,9 @@ jobs:
       - name: Compile and release
         id: compile
         uses: rust-build/rust-build.action@v1.4.5
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.10.0"
         with:
           TOOLCHAIN_VERSION: nightly
           RUSTTARGET: ${{ matrix.target }}
           UPLOAD_MODE: ${{ matrix.archive }}
-          MACOSX_DEPLOYMENT_TARGET: "10.10.0"

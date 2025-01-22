@@ -44,6 +44,10 @@ enum Commands {
     Generate {
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(short, long)]
+        process: Option<String>,
+        #[arg(short, long)]
+        notes: Option<String>,
     },
     Gui {},
 }
@@ -80,8 +84,13 @@ fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) -> anyhow::Result
     Ok(())
 }
 
-fn generate(output_path: &PathBuf, debug: bool) -> anyhow::Result<()> {
-    let image = generate::generate(debug)?;
+fn generate(
+    output_path: &PathBuf,
+    process: Option<String>,
+    notes: Option<String>,
+    debug: bool,
+) -> anyhow::Result<()> {
+    let image = generate::generate(process, notes, debug)?;
     image.save(output_path)?;
     Ok(())
 }
@@ -93,8 +102,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Analyze { input, output_dir } => {
             analyze(&input, &output_dir, args.debug)?;
         }
-        Commands::Generate { output } => {
-            generate(output, args.debug)?;
+        Commands::Generate {
+            process,
+            notes,
+            output,
+        } => {
+            generate(output, process.clone(), notes.clone(), args.debug)?;
         }
         Commands::Apply {
             input,

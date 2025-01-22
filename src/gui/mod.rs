@@ -1,10 +1,13 @@
+use regex;
 use std::fs;
 use std::path::PathBuf;
 
 use anyhow;
 use eframe::egui;
+use egui::{Color32, RichText};
 use image;
 use image::DynamicImage;
+use rfd;
 use splines::Spline;
 
 use super::analyze;
@@ -68,6 +71,11 @@ struct CurvedApp {
     apply_page_state: ApplyPageState,
 }
 
+fn action_button(text: &str) -> egui::Button {
+    egui::Button::new(RichText::new(text).color(Color32::from_gray(16)))
+        .fill(Color32::from_rgb(255, 143, 0))
+}
+
 fn draw_analyze_preview(
     curve: &Spline<f64, f64>,
     histogram: &Vec<u32>,
@@ -107,7 +115,7 @@ impl CurvedApp {
 
 pub fn start(debug: bool) {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([950.0, 750.0]),
         ..Default::default()
     };
 
@@ -120,6 +128,14 @@ pub fn start(debug: bool) {
         }),
     )
     .unwrap();
+}
+
+fn slugify(s: String) -> anyhow::Result<String> {
+    let re = regex::Regex::new("\\s")?;
+    let downcased = str::to_lowercase(&s);
+    let trimmed = str::trim(&downcased);
+    let no_white_space = re.replace_all(&trimmed, "-");
+    Ok(no_white_space.to_string())
 }
 
 fn tab_bar(ui: &mut egui::Ui, app: &mut CurvedApp) {
@@ -144,6 +160,7 @@ fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState, debug: bool) 
     egui::SidePanel::left("side_bar")
         .default_width(325.0)
         .show_inside(ui, |ui| {
+            ui.add_space(12.0);
             ui.label(
                 "Generates a step wedge for printing as a transparency. Output will be a 16bit \
                  greyscale image. It is generated in its \"inverted\" form and does not need to \
@@ -151,17 +168,30 @@ fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState, debug: bool) 
             );
 
             ui.separator();
+            ui.add_space(12.0);
 
             let process_label = ui.label("Process: ");
             ui.text_edit_singleline(&mut process)
                 .labelled_by(process_label.id);
+            ui.add_space(12.0);
 
             let notes_label = ui.label("Notes: ");
             ui.text_edit_singleline(&mut notes)
                 .labelled_by(notes_label.id);
+            ui.add_space(12.0);
 
             if ui.button("Generate").clicked() {
-                let image = generate::generate(debug).unwrap();
+                let no = if notes == "" {
+                    None
+                } else {
+                    Some(notes.clone())
+                };
+                let pr = if process == "" {
+                    None
+                } else {
+                    Some(process.clone())
+                };
+                let image = generate::generate(no, pr, debug).unwrap();
                 let preview = TextureBufferedImage::new(
                     format!("generated_step_wedge_{}_{}", state.process, state.notes),
                     &image,
@@ -178,15 +208,24 @@ fn generate_page(ui: &mut egui::Ui, state: &mut GeneratePageState, debug: bool) 
         egui::TopBottomPanel::bottom("image_commands")
             .min_height(32.0)
             .show_inside(ui, |ui| {
-                if let Some(image) = &state.image {
-                    if ui.button("Save").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().save_file() {
-                            image.image.save(path).unwrap();
-                        }
-                    };
-                } else {
-                    ui.add_enabled(false, egui::Button::new("Save"));
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(image) = &state.image {
+                        let filename = if state.process == "" {
+                            "step-wedge.png".to_string()
+                        } else {
+                            format!("{}-step-wedge.png", slugify(state.process.clone()).unwrap())
+                        };
+                        if ui.add(action_button("Save")).clicked() {
+                            if let Some(path) =
+                                rfd::FileDialog::new().set_file_name(filename).save_file()
+                            {
+                                image.image.save(path).unwrap();
+                            }
+                        };
+                    } else {
+                        ui.add_enabled(false, egui::Button::new("Save"));
+                    }
+                });
             });
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(image) = &mut state.image {
@@ -203,6 +242,9 @@ fn apply_page(ui: &mut egui::Ui, state: &mut ApplyPageState) {
     egui::SidePanel::left("side_bar")
         .min_width(325.0)
         .show_inside(ui, |ui| {
+            ui.add_space(12.0);
+            ui.label("Apply a given curve to an image for printing.");
+            ui.add_space(12.0);
             if ui.button("Select Image").clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
                     let image = image::open(&path).unwrap();
@@ -223,40 +265,44 @@ fn apply_page(ui: &mut egui::Ui, state: &mut ApplyPageState) {
         egui::TopBottomPanel::bottom("controls")
             .min_height(32.0)
             .show_inside(ui, |ui| {
-                if state.curved_image.is_some() {
-                    ui.horizontal(|ui| {
-                        if let Some(ci) = &state.curved_image {
-                            if ui.button("Save").clicked() {
-                                if let Some(path) = rfd::FileDialog::new().save_file() {
-                                    ci.image.save(path).unwrap();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if state.curved_image.is_some() {
+                        ui.horizontal(|ui| {
+                            if state.curved_image.is_some() {
+                                if ui.button("Undo").clicked() {
+                                    state.curved_image = None;
                                 }
                             }
-                            if ui.button("Undo").clicked() {
-                                state.curved_image = None;
+                            if let Some(ci) = &state.curved_image {
+                                if ui.button("Save").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new().save_file() {
+                                        ci.image.save(path).unwrap();
+                                    }
+                                }
                             }
-                        }
-                    });
-                } else if let Some(image) = &state.image {
-                    if ui.button("Apply Curve").clicked() {
-                        if let Some(curve_file) = rfd::FileDialog::new().pick_file() {
-                            let curve_data = fs::read_to_string(curve_file).unwrap();
-                            let curve =
-                                serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
-                            let curved_image = apply::apply(&image.image, &curve);
-                            state.curve = Some(curve);
+                        });
+                    } else if let Some(image) = &state.image {
+                        if ui.add(action_button("Apply Curve")).clicked() {
+                            if let Some(curve_file) = rfd::FileDialog::new().pick_file() {
+                                let curve_data = fs::read_to_string(curve_file).unwrap();
+                                let curve =
+                                    serde_json::from_str::<Spline<f64, f64>>(&curve_data).unwrap();
+                                let curved_image = apply::apply(&image.image, &curve);
+                                state.curve = Some(curve);
 
-                            let preview = TextureBufferedImage::new(
-                                "curved_image_preview".to_string(),
-                                &curved_image,
-                            );
-                            state.curved_image = Some(PreviewedImage {
-                                path: image.path.clone(),
-                                image: curved_image,
-                                preview,
-                            });
-                        }
-                    };
-                }
+                                let preview = TextureBufferedImage::new(
+                                    "curved_image_preview".to_string(),
+                                    &curved_image,
+                                );
+                                state.curved_image = Some(PreviewedImage {
+                                    path: image.path.clone(),
+                                    image: curved_image,
+                                    preview,
+                                });
+                            }
+                        };
+                    }
+                })
             });
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(ci) = &mut state.curved_image {
@@ -272,11 +318,13 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
     egui::SidePanel::left("side_bar")
         .min_width(325.0)
         .show_inside(ui, |ui| {
+            ui.add_space(12.0);
             ui.label(
                 "Analyze evaluates a scan of the generated step wedge to generate a new curve \
                  file.",
             );
             ui.separator();
+            ui.add_space(12.0);
             if ui.button("Select Scan").clicked() {
                 if let Some(file) = rfd::FileDialog::new().pick_file() {
                     let path = PathBuf::from(file.display().to_string());
@@ -312,41 +360,48 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
         egui::TopBottomPanel::bottom("actions")
             .min_height(32.0)
             .show_inside(ui, |ui| {
-                ui.horizontal(|ui| match state.preview_tab {
-                    AnalyzePreviewTab::Scan => {
-                        if let Some(scan) = &state.scan {
-                            if ui.add_enabled(true, egui::Button::new("analyze")).clicked() {
-                                let analyze_results = analyze::analyze(&scan.image, debug).unwrap();
-                                state.analysis_preview = Some(
-                                    draw_analyze_preview(
-                                        &analyze_results.curve,
-                                        &analyze_results.histogram,
-                                    )
-                                    .unwrap(),
-                                );
-                                state.analysis = Some(analyze_results);
-                                state.preview_tab = AnalyzePreviewTab::Results;
-                            }
-                        } else {
-                            ui.add_enabled(false, egui::Button::new("analyze"));
-                        }
-                        if let Some(scan) = &mut state.scan {
-                            let path: String = scan.path.to_string_lossy().to_string();
-                            ui.monospace(path);
-                        }
-                    }
-                    AnalyzePreviewTab::Results => {
-                        if let Some(analysis) = &state.analysis {
-                            if ui.button("save").clicked() {
-                                if let Some(path) = rfd::FileDialog::new().save_file() {
-                                    let curve_file = fs::File::create(path).unwrap();
-                                    serde_json::to_writer(&curve_file, &analysis.curve).unwrap();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match state.preview_tab {
+                        AnalyzePreviewTab::Scan => {
+                            if let Some(scan) = &state.scan {
+                                if ui.add_enabled(true, action_button("Analyze")).clicked() {
+                                    let analyze_results =
+                                        analyze::analyze(&scan.image, debug).unwrap();
+                                    state.analysis_preview = Some(
+                                        draw_analyze_preview(
+                                            &analyze_results.curve,
+                                            &analyze_results.histogram,
+                                        )
+                                        .unwrap(),
+                                    );
+                                    state.analysis = Some(analyze_results);
+                                    state.preview_tab = AnalyzePreviewTab::Results;
                                 }
-                            };
-                        } else {
-                            let _ = ui.button("save");
+                            } else {
+                                ui.add_enabled(false, action_button("Analyze"));
+                            }
+                            if let Some(scan) = &mut state.scan {
+                                let path: String = scan.path.to_string_lossy().to_string();
+                                ui.monospace(path);
+                            }
                         }
-                    }
+                        AnalyzePreviewTab::Results => {
+                            if let Some(analysis) = &state.analysis {
+                                if ui.add(action_button("Save")).clicked() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .set_file_name("curve.json")
+                                        .save_file()
+                                    {
+                                        let curve_file = fs::File::create(path).unwrap();
+                                        serde_json::to_writer(&curve_file, &analysis.curve)
+                                            .unwrap();
+                                    }
+                                };
+                            } else {
+                                let _ = ui.button("Save");
+                            }
+                        }
+                    };
                 });
             });
         egui::CentralPanel::default().show_inside(ui, |ui| match state.preview_tab {

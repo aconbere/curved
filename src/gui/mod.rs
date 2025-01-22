@@ -269,12 +269,12 @@ fn apply_page(ui: &mut egui::Ui, state: &mut ApplyPageState) {
                     if state.curved_image.is_some() {
                         ui.horizontal(|ui| {
                             if state.curved_image.is_some() {
-                                if ui.button("Undo").clicked() {
+                                if ui.add(action_button("Undo")).clicked() {
                                     state.curved_image = None;
                                 }
                             }
                             if let Some(ci) = &state.curved_image {
-                                if ui.button("Save").clicked() {
+                                if ui.add(action_button("Save")).clicked() {
                                     if let Some(path) = rfd::FileDialog::new().save_file() {
                                         ci.image.save(path).unwrap();
                                     }

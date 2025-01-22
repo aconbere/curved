@@ -26,7 +26,6 @@ pub fn generate(process: Option<String>, notes: Option<String>) -> anyhow::Resul
     let start_y = 10;
 
     let step_description = StepDescription::new(101, 10, 1000, u16::MAX as u32);
-    println!("Running with steps: {:?}", step_description);
 
     let mut image: Gray16Image =
         ImageBuffer::new(step_description.width + 20, step_description.height + 20);

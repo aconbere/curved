@@ -96,15 +96,18 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     }
 
     let mut samples: Vec<u16> = vec![0; step_description.count as usize];
-    let mut n = 0;
-    for row in 0..11 {
-        for col in 0..10 {
-            if n >= 101 {
+    let mut n: usize = 0;
+    for row in 0..step_description.rows {
+        for col in 0..step_description.columns {
+            if n >= step_description.count as usize {
                 break;
             }
             let x = origin_x + (col * square_size);
             let y = origin_y + (row * square_size);
 
+            // this is a "window" of the square, stepped in 25-30 pixels on each side so as
+            // to avoid any malarky with the ednge of the square or the number on the top
+            // left corner
             let view = image_16.view(x + 25, y + 25, square_size - 30, square_size - 30);
             let sample = sampled_mean(view);
             samples[n] = sample;
@@ -113,7 +116,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     }
 
     let expected_interval = (step_description.max_tone / (step_description.count - 1)) as u16;
-    let expected_values = (0..step_description.count).map(|x| x as u16 * expected_interval);
+    let input_values = (0..step_description.count).map(|x| x as u16 * expected_interval);
 
     // Now normalize the samples based on the maximum and minimum values
     // We expect for the max observed to be greater than zero and the minimum
@@ -204,19 +207,16 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     // assume a linear relationship, so every value of expected on the x
     // axis should be expected on the y axis. Our observed values will be
     // different. The curve is the delta.
-
-    let samples_with_expected_values: Vec<(u16, u16)> = expected_values
+    let input_values_with_samples: Vec<(u16, u16)> = input_values
         .clone()
         .into_iter()
         .zip(normalized_samples)
         .collect();
 
-    let curve_points: anyhow::Result<Vec<(u16, u16)>> = expected_values
+    let curve_points: anyhow::Result<Vec<(u16, u16)>> = input_values
         .clone()
         .into_iter()
-        .map(|e| {
-            find_closest_matching_input_density(&samples_with_expected_values, e).map(|c| (e, c))
-        })
+        .map(|e| find_closest_matching_input_density(&input_values_with_samples, e).map(|c| (e, c)))
         .collect();
 
     let curve = best_fit_spline(&curve_points?);
@@ -336,6 +336,8 @@ fn find_closest_matching_input_density(
     let mut lower_bound_density: Option<u16> = None;
     let mut upper_bound_density: Option<u16> = None;
 
+    // search forwardd, find the first output_density /greater/ than needle
+    // our lower bound will then be the input density immediately prior
     for (i, (_, output_density)) in haystack.into_iter().enumerate() {
         if *output_density >= needle {
             if i == 0 {
@@ -344,24 +346,31 @@ fn find_closest_matching_input_density(
             }
 
             // if we found an exact match don't look backwards
-            let adjustment = if *output_density == needle { 0 } else { 1 };
-            let (input_density, _) = haystack[i - adjustment];
-            lower_bound_density = Some(input_density);
+            if *output_density == needle {
+                lower_bound_density = Some(haystack[i].0)
+            } else {
+                lower_bound_density = Some(haystack[i - 1].0)
+            }
+
             break;
         }
     }
 
+    // search backwards, find the first output_density /lesser/ than needle
+    // our upper bound will then be the input density immediately prior
     for (i, (_, output_density)) in haystack.into_iter().rev().enumerate() {
         if *output_density <= needle {
             if i == 0 {
                 upper_bound_density = Some(u16::MAX);
                 break;
             }
-            // if we found an exact match don't look backwards
-            let adjustment = if *output_density == needle { 0 } else { 1 };
 
-            let (input_density, _) = haystack[(haystack.len() - adjustment) - i];
-            upper_bound_density = Some(input_density);
+            if *output_density == needle {
+                upper_bound_density = Some(haystack[haystack.len() - i].0)
+            } else {
+                upper_bound_density = Some(haystack[haystack.len() - i - 1].0)
+            }
+
             break;
         }
     }

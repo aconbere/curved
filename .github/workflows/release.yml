@@ -29,4 +29,4 @@ jobs:
         with:
           TOOLCHAIN_VERSION: nightly
           RUSTTARGET: ${{ matrix.target }}
-          UPLOAD_MODE: ${{ matrix.archive }}
+          ARCHIVE_TYPES: ${{ matrix.archive }}

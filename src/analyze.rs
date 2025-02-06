@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, Result};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, SubImage};
 use imageproc::drawing::draw_filled_rect_mut;
 use imageproc::edges;
@@ -28,6 +28,7 @@ pub struct AnalyzeResults {
  */
 pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResults> {
     let step_description = StepDescription::new(101, 10, 1000, u16::MAX as u32);
+    let input_values = step_description.input_values();
 
     // convert to a 16bit Greyscale image this is our working set
     let image_16 = image.to_luma16();
@@ -35,144 +36,22 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     // conver to 8bit greyscale used for edge / line detection
     let image_8 = image.to_luma8();
 
+    let grid_analysis = analyze_grid(&image_8, debug)?;
+    let samples = collect_samples(&image_16, &step_description, &grid_analysis);
     if debug {
-        println!("Detecting Edges...");
+        println!("Found: {} samples", samples.values.len());
+        println!("sample min: {}", samples.min);
+        println!("sample max: {}", samples.max);
+        println!("dynamic range: {}", samples.max - samples.min);
     }
 
-    // Canny is an edge detection algorithm, it's the input to the hough transform
-    // we'll use later to do line detection
-    let edges_image = edges::canny(&image_8, 50.0, 100.0);
-
-    if debug {
-        println!("Finding Lines...");
-    }
-
-    // Detect lines using Hough transform. The generated image uses lines to differentiate the
-    // steps in the print This should allow us then to find those lines and then search the image
-    // for our steps. Vote and suppression values were determined through trial and error, there
-    // may be more effective values.
-    let options = hough::LineDetectionOptions {
-        vote_threshold: 200,
-        suppression_radius: 8,
-    };
-    let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
-
-    let lines_image = generate_hough_lines_image(&edges_image, &lines);
-
-    if debug {
-        println!("Searching for grid...");
-    }
-
-    // Note! In the future lines wont be perfectly alinged, I'll need to find
-    // the angle of a nearby line and then adjust the image to match that
-    //
-    // See: https://docs.rs/imageproc/latest/imageproc/geometric_transformations/fn.rotate.html
-
-    let vertical_lines: Vec<&hough::PolarLine> =
-        lines.iter().filter(|l| l.angle_in_degrees == 90).collect();
-
-    let horizontal_lines: Vec<&hough::PolarLine> =
-        lines.iter().filter(|l| l.angle_in_degrees == 0).collect();
-
-    // Safety check to make sure our image is clear enough to find all the lines
-    if vertical_lines.len() < 11 || horizontal_lines.len() < 11 {
-        return Err(anyhow!(
-            "Failed to find sufficient lines for step detection"
-        ));
-    }
-
-    // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
-    // horizontal lines "r" is the same as the y coordinate.
-    let origin_x = vertical_lines[0].r as u32;
-    let origin_y = horizontal_lines[0].r as u32;
-    if debug {
-        println!("Origin: ({}, {})", origin_x, origin_y);
-    }
-
-    // Find the distance between the first two lines. Use it to find our squares
-    let square_size = (vertical_lines[1].r - vertical_lines[0].r).floor() as u32;
-    if debug {
-        println!("Square Size: {}", square_size);
-    }
-
-    let mut samples: Vec<u16> = vec![0; step_description.count as usize];
-    let mut n: usize = 0;
-    for row in 0..step_description.rows {
-        for col in 0..step_description.columns {
-            if n >= step_description.count as usize {
-                break;
-            }
-            let x = origin_x + (col * square_size);
-            let y = origin_y + (row * square_size);
-
-            // this is a "window" of the square, stepped in 25-30 pixels on each side so as
-            // to avoid any malarky with the ednge of the square or the number on the top
-            // left corner
-            let view = image_16.view(x + 25, y + 25, square_size - 30, square_size - 30);
-            let sample = sampled_mean(view);
-            samples[n] = sample;
-            n += 1;
-        }
-    }
-
-    let expected_interval = (step_description.max_tone / (step_description.count - 1)) as u16;
-    let input_values = (0..step_description.count).map(|x| x as u16 * expected_interval);
-
-    // Now normalize the samples based on the maximum and minimum values
-    // We expect for the max observed to be greater than zero and the minimum
-    // to to less than u16::max. Assuming the print was printed to d-max then
-    // we want to distribute our observed values evenly between max and min
-    // before determining curve adjustments
-
-    let sample_min = samples.iter().min().ok_or(anyhow!(
-        "No min sample found, no valid samples, check source image."
-    ))?;
-
-    let sample_max = samples.iter().max().ok_or(anyhow!(
-        "No max sample found, no valid samples, check source image.",
-    ))?;
-
-    if debug {
-        println!("sample min: {}", sample_min);
-        println!("sample max: {}", sample_max);
-    }
-
-    /* example
-     *
-     * Suppose we have:
-     *  - a full range from [0, 65535] inclusive
-     *  - a subset in the range [256, 25280]
-     *
-     * If we want to expand the subset to fill the full range we can:
-     * subtract the minimum value from all the values in the subset to
-     * bring the minimum value to 0;
-     *
-     * subset - 256 => [0, 65024]
-     *
-     * Then we need to expand those values to fill up to 65535 by multiplying them
-     * by 65535 / our new max (65024)
-     */
-    let normalize_factor = (step_description.max_tone as f32) / ((sample_max - sample_min) as f32);
-
-    if debug {
-        println!("dynamic range: {}", sample_max - sample_min);
-        println!("normalize_factor: {}", normalize_factor);
-    }
-
-    let normalized_samples: Vec<u16> = samples
-        .iter()
-        .map(|s| ((s - sample_min) as f32 * normalize_factor) as u16)
-        .collect();
-
-    let normalized_image = map_pixels(&image_16, |_, _, p| {
-        let new_v = p[0].saturating_sub(*sample_min);
-        Luma([(new_v as f32 * normalize_factor) as u16])
-    });
+    let (normalized_image, normalized_samples) =
+        normalize_image(&step_description, &image_16, &samples);
 
     /* Use our own observed values to find where we should place
      * our points to curve with
      *
-     * Ax an example let's assume we have a table like below:
+     * As an example let's assume we have a table like below:
      *
      * ---
      * i    exp     norm
@@ -223,7 +102,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     let histogram = create_histogram(&normalized_image);
 
     Ok(AnalyzeResults {
-        lines_image: DynamicImage::ImageRgb8(lines_image),
+        lines_image: grid_analysis.lines_image,
         normalized_image: DynamicImage::ImageLuma16(normalized_image),
         histogram,
         curve,
@@ -336,6 +215,19 @@ pub fn draw_histogram(
  * forward until finding the first output density larger than needle. Then reversing the search to
  * find the first output density smaller than needle. Interpolate the two input densities for our
  * resulting value.
+ *
+ * Issue: If the highs or lows completely or nearly clip then I think we end up with clumbs at the top and
+ * bottom. Need a way to avoid this.
+ *
+ * for example of our distrbution looks like
+ *
+ * > [(0, 0), (5,0), (10,0), (15, 5), (20,10), (25, 15), (30, 20), (35, 20), (40, 20)]
+ *
+ * searching for the output value that match 2 we would look forward and find the first greater
+ * output (5) and record (10,0) as our match. Then looking backward we would find (10,0) as the
+ * first lesser value and record (15,5) as our match.
+ *
+ *
  */
 fn find_closest_matching_input_density(
     haystack: &Vec<(u16, u16)>,
@@ -352,7 +244,6 @@ fn find_closest_matching_input_density(
                 lower_bound_density = Some(0);
                 break;
             }
-
             // if we found an exact match don't look backwards
             if *output_density == needle {
                 lower_bound_density = Some(haystack[i].0)
@@ -405,6 +296,162 @@ fn create_histogram(image: &ImageBuffer<Luma<u16>, Vec<u16>>) -> Vec<u32> {
     }
 
     histogram
+}
+
+struct GridAnalysis {
+    origin_x: u32,
+    origin_y: u32,
+    square_size: u32,
+    lines_image: DynamicImage,
+}
+
+fn analyze_grid(image: &ImageBuffer<Luma<u8>, Vec<u8>>, debug: bool) -> Result<GridAnalysis> {
+    // Canny is an edge detection algorithm, it's the input to the hough transform
+    // we'll use later to do line detection
+    let edges_image = edges::canny(image, 50.0, 100.0);
+
+    if debug {
+        println!("Finding Lines...");
+    }
+
+    // Detect lines using Hough transform. The generated image uses lines to differentiate the
+    // steps in the print This should allow us then to find those lines and then search the image
+    // for our steps. Vote and suppression values were determined through trial and error, there
+    // may be more effective values.
+    let options = hough::LineDetectionOptions {
+        vote_threshold: 200,
+        suppression_radius: 8,
+    };
+    let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
+
+    let lines_image = generate_hough_lines_image(&edges_image, &lines);
+
+    if debug {
+        println!("Searching for grid...");
+    }
+    // Note! In the future lines wont be perfectly alinged, I'll need to find
+    // the angle of a nearby line and then adjust the image to match that
+    //
+    // See: https://docs.rs/imageproc/latest/imageproc/geometric_transformations/fn.rotate.html
+
+    let vertical_lines: Vec<&hough::PolarLine> =
+        lines.iter().filter(|l| l.angle_in_degrees == 90).collect();
+
+    let horizontal_lines: Vec<&hough::PolarLine> =
+        lines.iter().filter(|l| l.angle_in_degrees == 0).collect();
+
+    // Safety check to make sure our image is clear enough to find all the lines
+    if vertical_lines.len() < 11 || horizontal_lines.len() < 11 {
+        return Err(anyhow!(
+            "Failed to find sufficient lines for step detection"
+        ));
+    }
+
+    // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
+    // horizontal lines "r" is the same as the y coordinate.
+    let origin_x = vertical_lines[0].r as u32;
+    let origin_y = horizontal_lines[0].r as u32;
+
+    // Find the distance between the first two lines. Use it to find our squares
+    let square_size = (vertical_lines[1].r - vertical_lines[0].r).floor() as u32;
+    Ok(GridAnalysis {
+        origin_x,
+        origin_y,
+        square_size,
+        lines_image: DynamicImage::ImageRgb8(lines_image),
+    })
+}
+
+struct Samples {
+    values: Vec<u16>,
+    min: u16,
+    max: u16,
+}
+
+fn collect_samples(
+    image: &ImageBuffer<Luma<u16>, Vec<u16>>,
+    step_description: &StepDescription,
+    grid_analysis: &GridAnalysis,
+) -> Samples {
+    let mut values: Vec<u16> = vec![0; step_description.count as usize];
+    let mut n: usize = 0;
+    let mut max: u16 = 0;
+    let mut min: u16 = u16::MAX;
+
+    for row in 0..step_description.rows {
+        for col in 0..step_description.columns {
+            if n >= step_description.count as usize {
+                break;
+            }
+            let x = grid_analysis.origin_x + (col * grid_analysis.square_size);
+            let y = grid_analysis.origin_y + (row * grid_analysis.square_size);
+
+            // this is a "window" of the square, stepped in 25-30 pixels on each side so as
+            // to avoid any malarky with the ednge of the square or the number on the top
+            // left corner
+            let view = image.view(
+                x + 25,
+                y + 25,
+                grid_analysis.square_size - 30,
+                grid_analysis.square_size - 30,
+            );
+            let sample = sampled_mean(view);
+
+            values[n] = sample;
+            if sample > max {
+                max = sample;
+            }
+            if sample < min {
+                min = sample;
+            }
+            n += 1;
+        }
+    }
+    Samples { values, max, min }
+}
+
+// Now normalize the samples based on the maximum and minimum values
+// We expect for the max observed to be greater than zero and the minimum
+// to to less than u16::max. Assuming the print was printed to d-max then
+// we want to distribute our observed values evenly between max and min
+// before determining curve adjustments
+fn normalize_image(
+    step_description: &StepDescription,
+    image: &ImageBuffer<Luma<u16>, Vec<u16>>,
+    samples: &Samples,
+) -> (ImageBuffer<Luma<u16>, Vec<u16>>, Vec<u16>) {
+    /* example
+     *
+     * Suppose we have:
+     *  - a full range from [0, 65535] inclusive
+     *  - a subset in the range [256, 25280]
+     *
+     * If we want to expand the subset to fill the full range we can:
+     * subtract the minimum value from all the values in the subset to
+     * bring the minimum value to 0;
+     *
+     * subset - 256 => [0, 65024]
+     *
+     * Then we need to expand those values to fill up to 65535 by multiplying them
+     * by 65535 / our new max (65024)
+     */
+    let normalize_factor =
+        (step_description.max_tone as f32) / ((samples.max - samples.min) as f32);
+
+    println!("normalize_factor: {}", normalize_factor);
+
+    let normalized_samples: Vec<u16> = samples
+        .values
+        .iter()
+        .map(|s| ((s - samples.min) as f32 * normalize_factor) as u16)
+        .collect();
+
+    let normalized_image = map_pixels(image, |_, _, p| {
+        let new_v = p[0].saturating_sub(samples.min);
+        Luma([(new_v as f32 * normalize_factor) as u16])
+    });
+
+    (normalized_image, normalized_samples)
 }
 
 #[cfg(test)]

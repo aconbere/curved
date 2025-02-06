@@ -8,6 +8,7 @@ pub struct StepDescription {
     pub interval: u32,
     pub square_size: u32,
     pub rows: u32,
+    pub expected_interval: u16,
 }
 
 impl StepDescription {
@@ -16,6 +17,7 @@ impl StepDescription {
         let square_size = (width as f32 / columns as f32).ceil() as u32;
         let rows = (count as f32 / columns as f32).ceil() as u32;
         let height = rows * square_size;
+        let expected_interval = (max_tone / (count - 1)) as u16;
 
         StepDescription {
             count,
@@ -26,6 +28,13 @@ impl StepDescription {
             interval,
             square_size,
             rows,
+            expected_interval,
         }
+    }
+
+    pub fn input_values(&self) -> Vec<u16> {
+        (0..self.count)
+            .map(|x| x as u16 * &self.expected_interval)
+            .collect()
     }
 }

@@ -31,6 +31,9 @@ enum Commands {
 
         #[arg(short, long)]
         output_dir: PathBuf,
+
+        #[arg(short, long)]
+        invert: bool,
     },
     Apply {
         #[arg(short, long)]
@@ -73,13 +76,21 @@ fn apply(
     Ok(())
 }
 
-fn analyze(input: &PathBuf, output_dir: &PathBuf, debug: bool) -> anyhow::Result<()> {
+fn analyze(
+    input: &PathBuf,
+    output_dir: &PathBuf,
+    invert_image: bool,
+    debug: bool,
+) -> anyhow::Result<()> {
     let input_file_path = fs::canonicalize(&input)?;
     let output_dir = fs::canonicalize(&output_dir)?;
 
     let curve_file = fs::File::create(output_dir.join("curve.json"))?;
     let image = image::open(input_file_path)?;
-    let analyze_results = analyze::analyze(&image, debug)?;
+    let analyze_results = analyze::analyze(&image, invert_image, debug)?;
+    analyze_results
+        .lines_image
+        .save(output_dir.join("lines.png"))?;
 
     serde_json::to_writer(&curve_file, &analyze_results.curve)?;
     Ok(())
@@ -99,8 +110,12 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match &args.command {
-        Commands::Analyze { input, output_dir } => {
-            analyze(&input, &output_dir, args.debug)?;
+        Commands::Analyze {
+            input,
+            output_dir,
+            invert,
+        } => {
+            analyze(&input, &output_dir, *invert, args.debug)?;
         }
         Commands::Generate {
             process,

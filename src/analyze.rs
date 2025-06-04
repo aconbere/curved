@@ -26,14 +26,18 @@ pub struct AnalyzeResults {
  * tone curve.
  *
  */
-pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResults> {
+pub fn analyze(
+    image: &DynamicImage,
+    invert_image: bool,
+    debug: bool,
+) -> anyhow::Result<AnalyzeResults> {
     let step_description = StepDescription::new(101, 10, 1000, u16::MAX as u32);
     let input_values = step_description.input_values();
 
     // convert to a 16bit Greyscale image this is our working set
     let image_16 = image.to_luma16();
 
-    // conver to 8bit greyscale used for edge / line detection
+    // convert to 8bit greyscale used for edge / line detection
     let image_8 = image.to_luma8();
 
     let grid_analysis = analyze_grid(&image_8, debug)?;
@@ -50,7 +54,7 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     let NormalizedResults {
         image: normalized_image,
         samples: normalized_samples,
-    } = normalize_image(&step_description, &image_16, &samples);
+    } = normalize_image(&step_description, &image_16, &samples, invert_image);
 
     let curve_points = linearize_inputs(&input_values, &normalized_samples)?;
     if debug {
@@ -59,10 +63,8 @@ pub fn analyze(image: &DynamicImage, debug: bool) -> anyhow::Result<AnalyzeResul
     let curve = best_fit_spline(&curve_points);
     let histogram = create_histogram(&normalized_image, &grid_analysis, &step_description);
 
-    println!("drawing analysis");
     let normalized_image_with_rects =
         draw_sampled_areas(&DynamicImage::ImageLuma16(normalized_image), &sampled_areas)?;
-    println!("done drawing analysis");
 
     Ok(AnalyzeResults {
         lines_image: grid_analysis.lines_image,
@@ -157,28 +159,35 @@ pub fn draw_curve(
     Ok(())
 }
 
+/* Draws a histogram ontop of `image`
+ *
+ * expects the image to be 1024x1024
+ */
 pub fn draw_histogram(
     image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>,
     histogram: &Vec<u32>,
 ) -> anyhow::Result<()> {
     let grey = image::Rgb::<u8>([128, 128, 128]);
 
-    let max = histogram
+    // The first and last buckets tend to get filled with stuff like
+    // lines and letters, not useful. Remove them.
+    let histogram_minus = &histogram[1..256];
+
+    let max = histogram_minus
         .into_iter()
         .max()
         .ok_or(anyhow!("could not find maximum histogram value"))?;
 
-    for (i, value) in histogram.into_iter().enumerate() {
+    for (i, value) in histogram_minus.into_iter().enumerate() {
         if i == 0 || i == 256 {
             continue;
         }
-        let scaled_percentage = (((*value as f32) / (*max as f32)) * 1024. * 5.) as u32;
 
-        if scaled_percentage > 0 {
-            let x = (i * 4) as i32;
-            let rect = Rect::at(x, (1024 - scaled_percentage) as i32).of_size(4, scaled_percentage);
-            draw_filled_rect_mut(image, rect, grey);
-        }
+        let scaled_percentage = (((*value as f32) / (*max as f32)) * 1024.) as u32;
+
+        let x = (i * 4) as i32;
+        let rect = Rect::at(x, (1024 - scaled_percentage) as i32).of_size(4, scaled_percentage);
+        draw_filled_rect_mut(image, rect, grey);
     }
     Ok(())
 }
@@ -259,8 +268,8 @@ fn create_histogram(
 ) -> Vec<u32> {
     let view = image
         .view(
-            grid_analysis.origin_x + 5,
-            grid_analysis.origin_y + 5,
+            grid_analysis.origin_x,
+            grid_analysis.origin_y,
             grid_analysis.square_size * step_description.columns,
             grid_analysis.square_size * step_description.rows,
         )
@@ -292,7 +301,7 @@ struct GridAnalysis {
 fn analyze_grid(image: &ImageBuffer<Luma<u8>, Vec<u8>>, debug: bool) -> Result<GridAnalysis> {
     // Canny is an edge detection algorithm, it's the input to the hough transform
     // we'll use later to do line detection
-    let edges_image = edges::canny(image, 50.0, 100.0);
+    let edges_image = edges::canny(image, 15.0, 100.0);
 
     if debug {
         println!("Finding Lines...");
@@ -303,8 +312,8 @@ fn analyze_grid(image: &ImageBuffer<Luma<u8>, Vec<u8>>, debug: bool) -> Result<G
     // for our steps. Vote and suppression values were determined through trial and error, there
     // may be more effective values.
     let options = hough::LineDetectionOptions {
-        vote_threshold: 200,
-        suppression_radius: 8,
+        vote_threshold: 150,
+        suppression_radius: 3,
     };
     let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
 
@@ -337,7 +346,10 @@ fn analyze_grid(image: &ImageBuffer<Luma<u8>, Vec<u8>>, debug: bool) -> Result<G
     let origin_y = horizontal_lines[0].r as u32;
 
     // Find the distance between the first two lines. Use it to find our squares
-    let square_size = (vertical_lines[1].r - vertical_lines[0].r).floor() as u32;
+    let _square_size = ((vertical_lines[1].r - vertical_lines[0].r) * 1.05).floor() as u32;
+    let (i_width, _i_height) = image.dimensions();
+    let square_size = i_width / 10;
+
     Ok(GridAnalysis {
         origin_x,
         origin_y,
@@ -360,6 +372,10 @@ fn collect_samples(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rects: &Vec<Rect>) 
     for (i, r) in rects.iter().enumerate() {
         let view = image.view(r.left() as u32, r.top() as u32, r.width(), r.height());
         let sample = sampled_mean(view);
+        if i == 1 {
+            println!("Rect: {:?}", r);
+            println!("Sample: {:?}", sample);
+        }
 
         values[i] = sample;
         if sample > max {
@@ -387,6 +403,7 @@ fn normalize_image(
     step_description: &StepDescription,
     image: &ImageBuffer<Luma<u16>, Vec<u16>>,
     samples: &Samples,
+    invert_image: bool,
 ) -> NormalizedResults {
     /* example
      *
@@ -406,13 +423,17 @@ fn normalize_image(
     let normalize_factor =
         (step_description.max_tone as f32) / ((samples.max - samples.min) as f32);
 
-    println!("normalize_factor: {}", normalize_factor);
-
-    let normalized_samples: Vec<u16> = samples
+    let mut normalized_samples: Vec<u16> = samples
         .values
         .iter()
         .map(|s| ((s - samples.min) as f32 * normalize_factor) as u16)
         .collect();
+
+    // this is dumb but I've changed how I want the order to work
+    // it used to be black to white, this is white to black
+    if !invert_image {
+        normalized_samples.reverse();
+    }
 
     let normalized_image = map_pixels(image, |_, _, p| {
         let new_v = p[0].saturating_sub(samples.min);
@@ -472,9 +493,6 @@ fn linearize_inputs(
         .zip(normalized_samples.into_iter().copied())
         .collect();
 
-    println!("input_values\n: {:?}\n", input_values);
-    println!("normalized_samples\n: {:?}\n", normalized_samples);
-
     input_values
         .clone()
         .into_iter()
@@ -489,8 +507,6 @@ fn sampled_areas(step_description: &StepDescription, grid_analysis: &GridAnalysi
     // 10% margin around the whole square
     let margin = (grid_analysis.square_size as f32 * 0.25).floor() as u32;
     let analyzed_size = grid_analysis.square_size - (2 * margin);
-
-    println!("margin: {}", margin);
 
     for row in 0..step_description.rows {
         for col in 0..step_description.columns {

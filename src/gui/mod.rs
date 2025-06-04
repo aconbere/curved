@@ -47,7 +47,6 @@ enum AnalyzePreviewTab {
     Lines,
 }
 
-#[derive(Default)]
 struct AnalyzePageState {
     scan: Option<PreviewedImage>,
     analysis: Option<analyze::AnalyzeResults>,
@@ -55,6 +54,21 @@ struct AnalyzePageState {
     normalized_preview: Option<TextureBufferedImage>,
     lines_preview: Option<TextureBufferedImage>,
     preview_tab: AnalyzePreviewTab,
+    inverted: bool,
+}
+
+impl Default for AnalyzePageState {
+    fn default() -> Self {
+        Self {
+            scan: None,
+            analysis: None,
+            analysis_preview: None,
+            normalized_preview: None,
+            lines_preview: None,
+            preview_tab: AnalyzePreviewTab::default(),
+            inverted: false,
+        }
+    }
 }
 
 #[derive(Default, PartialEq)]
@@ -346,6 +360,27 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
                     });
                 }
             }
+            if let Some(scan) = &mut state.scan {
+                if ui.button("left").clicked() {
+                    scan.image = scan.image.rotate270();
+                    scan.preview =
+                        TextureBufferedImage::new(format!("image_rotated_270"), &scan.image)
+                };
+                if ui.button("right").clicked() {
+                    scan.image = scan.image.rotate90();
+                    scan.preview =
+                        TextureBufferedImage::new(format!("image_rotated_90"), &scan.image)
+                };
+                if state.inverted {
+                    if ui.button("uninvert").clicked() {
+                        state.inverted = false
+                    };
+                } else {
+                    if ui.button("invert").clicked() {
+                        state.inverted = true
+                    };
+                }
+            }
         });
 
     egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -376,7 +411,8 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
                             if let Some(scan) = &state.scan {
                                 if ui.add_enabled(true, action_button("Analyze")).clicked() {
                                     let analyze_results =
-                                        analyze::analyze(&scan.image, debug).unwrap();
+                                        analyze::analyze(&scan.image, state.inverted, debug)
+                                            .unwrap();
                                     state.analysis_preview = Some(
                                         draw_analyze_preview(
                                             &analyze_results.curve,

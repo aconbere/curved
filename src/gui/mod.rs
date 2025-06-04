@@ -44,7 +44,6 @@ enum AnalyzePreviewTab {
     Scan,
     Results,
     Normalized,
-    Lines,
 }
 
 struct AnalyzePageState {
@@ -52,7 +51,6 @@ struct AnalyzePageState {
     analysis: Option<analyze::AnalyzeResults>,
     analysis_preview: Option<TextureBufferedImage>,
     normalized_preview: Option<TextureBufferedImage>,
-    lines_preview: Option<TextureBufferedImage>,
     preview_tab: AnalyzePreviewTab,
     inverted: bool,
 }
@@ -64,7 +62,6 @@ impl Default for AnalyzePageState {
             analysis: None,
             analysis_preview: None,
             normalized_preview: None,
-            lines_preview: None,
             preview_tab: AnalyzePreviewTab::default(),
             inverted: false,
         }
@@ -399,7 +396,6 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
                         AnalyzePreviewTab::Normalized,
                         "Normalized",
                     );
-                    ui.selectable_value(&mut state.preview_tab, AnalyzePreviewTab::Lines, "Lines");
                 });
             });
         egui::TopBottomPanel::bottom("actions")
@@ -423,10 +419,6 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
                                     state.normalized_preview = Some(TextureBufferedImage::new(
                                         "normalized_image".to_string(),
                                         &analyze_results.normalized_image,
-                                    ));
-                                    state.lines_preview = Some(TextureBufferedImage::new(
-                                        "line_detection".to_string(),
-                                        &analyze_results.lines_image,
                                     ));
                                     state.analysis = Some(analyze_results);
                                     state.preview_tab = AnalyzePreviewTab::Results;
@@ -456,20 +448,6 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
                             }
                         }
                         AnalyzePreviewTab::Normalized => {}
-                        AnalyzePreviewTab::Lines => {
-                            if let Some(analysis) = &state.analysis {
-                                if ui.add(action_button("Save")).clicked() {
-                                    if let Some(path) = rfd::FileDialog::new()
-                                        .set_file_name("lines.png")
-                                        .save_file()
-                                    {
-                                        analysis.lines_image.save(path).unwrap();
-                                    }
-                                };
-                            } else {
-                                let _ = ui.button("Save");
-                            }
-                        }
                     };
                 });
             });
@@ -486,11 +464,6 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
             }
             AnalyzePreviewTab::Normalized => {
                 if let Some(preview) = &mut state.normalized_preview {
-                    preview.ui(ui);
-                }
-            }
-            AnalyzePreviewTab::Lines => {
-                if let Some(preview) = &mut state.lines_preview {
                     preview.ui(ui);
                 }
             }

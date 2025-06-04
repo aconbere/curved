@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Result};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Rgb, SubImage};
 use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut};
-use imageproc::edges;
-use imageproc::hough;
 use imageproc::map::map_pixels;
 use imageproc::rect::Rect;
 use splines::{Interpolation, Key, Spline};
@@ -10,7 +8,6 @@ use splines::{Interpolation, Key, Spline};
 use super::step_description::StepDescription;
 
 pub struct AnalyzeResults {
-    pub lines_image: DynamicImage,
     pub normalized_image: DynamicImage,
     pub curve: Spline<f64, f64>,
     pub histogram: Vec<u32>,
@@ -40,7 +37,7 @@ pub fn analyze(
     // convert to 8bit greyscale used for edge / line detection
     let image_8 = image.to_luma8();
 
-    let grid_analysis = analyze_grid(&image_8, debug)?;
+    let grid_analysis = analyze_grid(&image_8)?;
     let sampled_areas = sampled_areas(&step_description, &grid_analysis);
     let samples = collect_samples(&image_16, &sampled_areas);
 
@@ -67,32 +64,10 @@ pub fn analyze(
         draw_sampled_areas(&DynamicImage::ImageLuma16(normalized_image), &sampled_areas)?;
 
     Ok(AnalyzeResults {
-        lines_image: grid_analysis.lines_image,
         normalized_image: DynamicImage::ImageRgb8(normalized_image_with_rects),
         histogram,
         curve,
     })
-}
-
-fn generate_hough_lines_image(
-    edges_image: &ImageBuffer<Luma<u8>, Vec<u8>>,
-    lines: &Vec<hough::PolarLine>,
-) -> ImageBuffer<image::Rgb<u8>, Vec<u8>> {
-    let white = image::Rgb::<u8>([255, 255, 255]);
-    let green = image::Rgb::<u8>([0, 255, 0]);
-    let black = image::Rgb::<u8>([0, 0, 0]);
-
-    // Convert edge image to colour
-    let color_edges = map_pixels(edges_image, |_, _, p| if p[0] > 0 { white } else { black });
-
-    let horiz_and_vert_lines: Vec<hough::PolarLine> = lines
-        .into_iter()
-        .filter(|l| l.angle_in_degrees == 90 || l.angle_in_degrees == 0)
-        .map(|l| *l)
-        .collect();
-
-    // Draw lines on top of edge image
-    hough::draw_polar_lines(&color_edges, &horiz_and_vert_lines, green)
 }
 
 /* Generate a spline (that can later be sampled from) based on the a vector of 2D points. Used for
@@ -289,7 +264,6 @@ struct GridAnalysis {
     origin_x: u32,
     origin_y: u32,
     square_size: u32,
-    lines_image: DynamicImage,
 }
 
 // Analyzes `image` looking for the grid of squares
@@ -298,63 +272,15 @@ struct GridAnalysis {
 // size, as well as the lines image used for rendering the results
 //
 // Note: Consider making the lines image a function so we don't have to pre-compute?
-fn analyze_grid(image: &ImageBuffer<Luma<u8>, Vec<u8>>, debug: bool) -> Result<GridAnalysis> {
-    // Canny is an edge detection algorithm, it's the input to the hough transform
-    // we'll use later to do line detection
-    let edges_image = edges::canny(image, 15.0, 100.0);
-
-    if debug {
-        println!("Finding Lines...");
-    }
-
-    // Detect lines using Hough transform. The generated image uses lines to differentiate the
-    // steps in the print This should allow us then to find those lines and then search the image
-    // for our steps. Vote and suppression values were determined through trial and error, there
-    // may be more effective values.
-    let options = hough::LineDetectionOptions {
-        vote_threshold: 150,
-        suppression_radius: 3,
-    };
-    let lines: Vec<hough::PolarLine> = hough::detect_lines(&edges_image, options);
-
-    let lines_image = generate_hough_lines_image(&edges_image, &lines);
-
-    if debug {
-        println!("Searching for grid...");
-    }
-    // Note! In the future lines wont be perfectly alinged, I'll need to find
-    // the angle of a nearby line and then adjust the image to match that
-    //
-    // See: https://docs.rs/imageproc/latest/imageproc/geometric_transformations/fn.rotate.html
-
-    let vertical_lines: Vec<&hough::PolarLine> =
-        lines.iter().filter(|l| l.angle_in_degrees == 90).collect();
-
-    let horizontal_lines: Vec<&hough::PolarLine> =
-        lines.iter().filter(|l| l.angle_in_degrees == 0).collect();
-
-    // Safety check to make sure our image is clear enough to find all the lines
-    if vertical_lines.len() < 11 || horizontal_lines.len() < 11 {
-        return Err(anyhow!(
-            "Failed to find sufficient lines for step detection"
-        ));
-    }
-
-    // A note: For vertical lines "r" in the PolarLine is the same as the x coordinate. For
-    // horizontal lines "r" is the same as the y coordinate.
-    let origin_x = vertical_lines[0].r as u32;
-    let origin_y = horizontal_lines[0].r as u32;
-
+fn analyze_grid(image: &ImageBuffer<Luma<u8>, Vec<u8>>) -> Result<GridAnalysis> {
     // Find the distance between the first two lines. Use it to find our squares
-    let _square_size = ((vertical_lines[1].r - vertical_lines[0].r) * 1.05).floor() as u32;
-    let (i_width, _i_height) = image.dimensions();
-    let square_size = i_width / 10;
+    let (width, _) = image.dimensions();
+    let square_size = width / 10;
 
     Ok(GridAnalysis {
-        origin_x,
-        origin_y,
+        origin_x: 0,
+        origin_y: 0,
         square_size,
-        lines_image: DynamicImage::ImageRgb8(lines_image),
     })
 }
 
@@ -372,10 +298,6 @@ fn collect_samples(image: &ImageBuffer<Luma<u16>, Vec<u16>>, rects: &Vec<Rect>) 
     for (i, r) in rects.iter().enumerate() {
         let view = image.view(r.left() as u32, r.top() as u32, r.width(), r.height());
         let sample = sampled_mean(view);
-        if i == 1 {
-            println!("Rect: {:?}", r);
-            println!("Sample: {:?}", sample);
-        }
 
         values[i] = sample;
         if sample > max {

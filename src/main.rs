@@ -88,9 +88,6 @@ fn analyze(
     let curve_file = fs::File::create(output_dir.join("curve.json"))?;
     let image = image::open(input_file_path)?;
     let analyze_results = analyze::analyze(&image, invert_image, debug)?;
-    analyze_results
-        .lines_image
-        .save(output_dir.join("lines.png"))?;
 
     serde_json::to_writer(&curve_file, &analyze_results.curve)?;
     Ok(())

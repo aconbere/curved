@@ -433,13 +433,23 @@ fn analyze_page(ui: &mut egui::Ui, state: &mut AnalyzePageState, debug: bool) {
                         }
                         AnalyzePreviewTab::Results => {
                             if let Some(analysis) = &state.analysis {
-                                if ui.add(action_button("Save")).clicked() {
+                                if ui.add(action_button("Save JSON")).clicked() {
                                     if let Some(path) = rfd::FileDialog::new()
                                         .set_file_name("curve.json")
                                         .save_file()
                                     {
                                         let curve_file = fs::File::create(path).unwrap();
                                         serde_json::to_writer(&curve_file, &analysis.curve)
+                                            .unwrap();
+                                    }
+                                };
+                                if ui.add(action_button("Save CSV")).clicked() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .set_file_name("curve.csv")
+                                        .save_file()
+                                    {
+                                        let mut csv_file = fs::File::create(path).unwrap();
+                                        analyze::write_small_csv(&mut csv_file, &analysis.curve)
                                             .unwrap();
                                     }
                                 };

@@ -1,3 +1,6 @@
+use std::fs;
+use std::io::Write;
+
 use anyhow::{anyhow, Result};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Rgb, SubImage};
 use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut};
@@ -118,6 +121,32 @@ fn draw_sampled_areas(
     Ok(image_rgb)
 }
 
+pub fn generate_small_sample(curve: &Spline<f64, f64>) -> Result<Vec<(u8, u8)>> {
+    let mut samples: Vec<(u8, u8)> = Vec::new();
+
+    for i in (0..u16::MAX).step_by(4096) {
+        let sample = curve
+            .clamped_sample(i as f64)
+            .ok_or(anyhow!("failed to sample spline"))?;
+
+        let clamped_i = (i as f32 / 256.).floor() as u8;
+        let clamped_sample = (sample / 256.).floor() as u8;
+
+        // divide by 256 to bring it back into [0,256]
+        samples.push((clamped_i, clamped_sample));
+    }
+    Ok(samples)
+}
+
+pub fn write_small_csv(file: &mut fs::File, curve: &Spline<f64, f64>) -> Result<()> {
+    let samples = generate_small_sample(curve)?;
+
+    for (i, x) in samples.into_iter() {
+        writeln!(file, "{}, {}", i, x)?;
+    }
+    Ok(())
+}
+
 pub fn draw_curve(
     image: &mut ImageBuffer<image::Rgb<u8>, Vec<u8>>,
     curve: &Spline<f64, f64>,
@@ -127,6 +156,7 @@ pub fn draw_curve(
         let sample = curve
             .clamped_sample(i as f64)
             .ok_or(anyhow!("failed to sample spline"))?;
+        // divide by 64 to bring it back into [0,1024]
         let y = 1023 - (sample / 64.) as u32;
         let x = (i / 64) as u32;
         image.put_pixel(x, y, green);
